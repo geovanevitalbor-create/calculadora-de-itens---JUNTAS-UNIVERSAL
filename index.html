@@ -768,8 +768,10 @@ const S = {
   kitsF:{ q:'', cli:'all', st:'all', shown:60 }, pecasF:{ q:'', f:'all', shown:80 }, refF:{ q:'', f:'faltam', shown:60 }, pendF:{ t:'all' },
   calc:{ linhas:[], result:null, busy:false, prodId:null, prodNome:'' }, pend:null, downloads:null, editor:null, pendingImport:null,
 };
-const canEdit = () => !!S.me && (S.me.papel === 'admin' || S.me.papel === 'editor');
-const isAdmin = () => !!S.me && S.me.papel === 'admin';
+const openMode = () => S.mode === 'supabase' && !!(S.cfg && S.cfg.acesso_livre) && !(S.me && S.me.id);   // sem login
+const canEdit = () => openMode() || (!!S.me && (S.me.papel === 'admin' || S.me.papel === 'editor'));
+const isAdmin = () => openMode() || (!!S.me && S.me.papel === 'admin');
+const realAdmin = () => !!S.me && S.me.papel === 'admin' && (S.mode === 'demo' || !!S.me.id);
 const clienteById = id => S.clientes.find(c => c.id === id) || null;
 const STATUS = {
   rascunho:{ l:'Rascunho', t:'t-neutral' }, em_revisao:{ l:'Em revisão', t:'t-warn' }, aprovado:{ l:'Aprovado', t:'t-ok' }, inativo:{ l:'Inativo', t:'t-crit' },
@@ -1047,11 +1049,12 @@ function SupaStore(){
     for (;;){ const rows = await q(sb.from(table).select(select).order(order).range(from, from + 999)); out = out.concat(rows); if (rows.length < 1000) break; from += 1000; }
     return out;
   }
+  const who = () => (S.me && S.me.nome) || null;
   const PECA_COLS = 'id,codigo,chave,descricao,tipo,familia,predio,fornecedor,espessura,material,unidade,foto_path,obs,ativo';
   const api = {
     sb,
     async session(){ const { data } = await sb.auth.getSession(); return data.session; },
-    async publicConfig(){ try { const r = await q(sb.from('config').select('*').limit(1)); return r[0] || {}; } catch(e){ return {}; } },
+    async publicConfig(){ try { const r = await q(sb.from('config').select('*').limit(1)); return r[0] || {}; } catch(e){ return { __erro:e.message }; } },
     async signIn(email, password){ await q(sb.auth.signInWithPassword({ email, password })); },
     async signOut(){ await sb.auth.signOut(); },
     async resetPassword(email){ await q(sb.auth.resetPasswordForEmail(email, { redirectTo:location.href.split('#')[0] })); },
@@ -1064,6 +1067,7 @@ function SupaStore(){
         q(sb.from('clientes').select('*').order('nome')), q(sb.from('predios').select('*').order('ordem')), q(sb.from('familias').select('*').order('nome'))]);
       let me = null;
       if (ses){ const r = await q(sb.from('perfis').select('*').eq('id', ses.user.id)); me = r[0] || { id:ses.user.id, nome:ses.user.email, email:ses.user.email, papel:'leitor', avisos_vistos_em:nowIso() }; }
+      else if (cfg.acesso_livre){ me = { id:null, nome:lsGet('ju_nome', '') || '', email:'', papel:'acesso livre', avisos_vistos_em:lsGet('ju_avisos_vistos', null) || nowIso() }; if (!lsGet('ju_avisos_vistos', null)) lsSet('ju_avisos_vistos', me.avisos_vistos_em); }
       else me = { id:null, nome:'Visitante', email:'', papel:'visitante', avisos_vistos_em:nowIso() };
       return { cfg, me, clientes, predios, familias };
     },
@@ -1084,18 +1088,18 @@ function SupaStore(){
       }
       return out;
     },
-    saveKit: (k, itens, fotos) => q(sb.rpc('salvar_kit', { p_kit:k, p_itens:itens, p_fotos:fotos == null ? null : fotos })),
-    setKitStatus: (id, st) => q(sb.from('kits').update({ status:st }).eq('id', id)),
-    duplicateKit: (id, cod) => q(sb.rpc('duplicar_kit', { p_kit_id:id, p_novo_cod:cod })),
-    deleteKit: id => q(sb.from('kits').delete().eq('id', id)),
+    saveKit: (k, itens, fotos) => q(sb.rpc('salvar_kit', { p_kit:k, p_itens:itens, p_fotos:fotos == null ? null : fotos, p_usuario:who() })),
+    setKitStatus: (id, st) => q(sb.rpc('mudar_status_kit', { p_kit_id:id, p_status:st, p_usuario:who() })),
+    duplicateKit: (id, cod) => q(sb.rpc('duplicar_kit', { p_kit_id:id, p_novo_cod:cod, p_usuario:who() })),
+    deleteKit: id => q(sb.rpc('apagar_kit', { p_kit_id:id, p_usuario:who() })),
     async peca(id){
       const p = await q(sb.from('pecas').select(PECA_COLS + ', comps:peca_componentes!peca_componentes_subkit_id_fkey(componente_id, qtde, ordem, peca:pecas!peca_componentes_componente_id_fkey(' + PECA_COLS + '))').eq('id', id).single());
       const comps = (p.comps || []).sort((a, b) => a.ordem - b.ordem); delete p.comps;
       return { peca:p, comps };
     },
-    savePeca: (p, comps) => q(sb.rpc('salvar_peca', { p_peca:p, p_componentes:comps == null ? null : comps })),
-    deletePeca: id => q(sb.from('pecas').delete().eq('id', id)),
-    setPecaFoto: (id, path) => q(sb.from('pecas').update({ foto_path:path }).eq('id', id)),
+    savePeca: (p, comps) => q(sb.rpc('salvar_peca', { p_peca:p, p_componentes:comps == null ? null : comps, p_usuario:who() })),
+    deletePeca: id => q(sb.rpc('apagar_peca', { p_peca_id:id, p_usuario:who() })),
+    setPecaFoto: (id, path) => q(sb.rpc('definir_foto_peca', { p_peca_id:id, p_path:path || '', p_usuario:who() })),
     async upload(blob, path){
       const small = await resizeImage(blob, 1400, 0.85);
       await q(sb.storage.from(CONFIG.bucket).upload(path, small.blob, { contentType:'image/jpeg', upsert:true, cacheControl:'3600' }));
@@ -1112,7 +1116,7 @@ function SupaStore(){
       return rows.map(h => Object.assign(h, { resumo:histResumo(h) }));
     },
     avisos: () => q(sb.from('avisos').select('*').order('em', { ascending:false }).limit(60)),
-    async marcarLidos(){ const t = nowIso(); if (S.me && S.me.id) await q(sb.from('perfis').update({ avisos_vistos_em:t }).eq('id', S.me.id)); return t; },
+    async marcarLidos(){ const t = nowIso(); if (S.me && S.me.id) await q(sb.from('perfis').update({ avisos_vistos_em:t }).eq('id', S.me.id)); else lsSet('ju_avisos_vistos', t); return t; },
     async producoes(){
       const rows = await q(sb.from('producoes').select('*, producao_kits(kit_id, qtde)').order('criado_em', { ascending:false }).limit(80));
       return rows.map(p => Object.assign(p, { linhas:(p.producao_kits || []).map(x => ({ kit_id:x.kit_id, qtde:Number(x.qtde) })) }));
@@ -1169,8 +1173,8 @@ function navHtml(rail){
     return (canEdit() ? '<button class="btn primary rail-add" type="button" data-act="new-kit">' + IC.plus + ' Cadastrar kit</button>' : '')
       + ['kits', 'pecas', 'calculadora', 'pendencias', 'referencia'].map(tab).join('')
       + '<button class="tab" type="button" data-act="open-avisos"><span class="ic">' + IC.bell + '</span><span class="lb">Avisos</span>' + b(unreadCount()) + '</button>'
-      + (isAdmin() ? '<button class="tab" type="button" data-act="open-usuarios"><span class="ic">' + IC.users + '</span><span class="lb">Usuários</span></button>'
-                   + '<button class="tab" type="button" data-act="open-config"><span class="ic">' + IC.gear + '</span><span class="lb">Configuração</span></button>' : '');
+      + (realAdmin() && S.mode === 'supabase' ? '<button class="tab" type="button" data-act="open-usuarios"><span class="ic">' + IC.users + '</span><span class="lb">Usuários</span></button>' : '')
+      + (isAdmin() ? '<button class="tab" type="button" data-act="open-config"><span class="ic">' + IC.gear + '</span><span class="lb">Configuração</span></button>' : '');
   }
   return tab('kits') + tab('pecas')
     + '<button class="fab-slot" type="button" data-act="go" data-v="calculadora"' + (S.view === 'calculadora' ? ' aria-current="page"' : '') + ' aria-label="Calculadora"><span class="fab">' + IC.calc + '</span><span>Calcular</span></button>'
@@ -1181,8 +1185,9 @@ function renderNav(){
   $('#railNav').innerHTML = navHtml(true); $('#tabNav').innerHTML = navHtml(false);
   const n = unreadCount(); const bb = $('#bellBadge'); bb.hidden = !n; bb.textContent = n > 99 ? '99+' : n;
   const u = S.me || {};
-  $('#railUser').innerHTML = '<div class="userline"><span class="av">' + esc((u.nome || '?').slice(0, 2).toUpperCase()) + '</span><div><b>' + esc(u.nome || '') + '</b>' + esc(u.papel || '') + (S.mode === 'demo' ? ' · demonstração' : '') + '</div></div>'
-    + (S.mode === 'supabase' && u.id ? '<button class="btn ghost small" type="button" data-act="logout" style="justify-content:flex-start;margin-top:6px">' + IC.out + ' Sair</button>' : '');
+  $('#railUser').innerHTML = '<div class="userline"><span class="av">' + esc((u.nome || '?').slice(0, 2).toUpperCase()) + '</span><div><b>' + esc(u.nome || 'Sem nome') + '</b>' + esc(u.papel || '') + (S.mode === 'demo' ? ' · demonstração' : '') + '</div></div>'
+    + (S.mode === 'supabase' && u.id ? '<button class="btn ghost small" type="button" data-act="logout" style="justify-content:flex-start;margin-top:6px">' + IC.out + ' Sair</button>' : '')
+    + (openMode() ? '<button class="btn ghost small" type="button" data-act="open-nome" style="justify-content:flex-start;margin-top:6px">' + IC.edit + ' Trocar meu nome</button>' : '');
 }
 function go(view){
   if (!VIEWS[view]) view = 'kits';
@@ -1750,7 +1755,7 @@ SHEETS.avisos = async () => {
   S.avisos = await DB.avisos();
   const t0 = Date.parse(S.me.avisos_vistos_em || 0) || 0;
   const html = (S.avisos.length ? '<div class="listbox">' + S.avisos.map(a => '<button class="av-row" type="button"' + (a.kit_id ? ' data-act="open-kit" data-id="' + a.kit_id + '"' : '') + '><span class="dot ' + (Date.parse(a.em) > t0 ? 't-ok' : '') + '"></span><span><b>' + esc(a.titulo) + '</b><span>' + esc([a.texto, a.por_nome ? 'por ' + a.por_nome : ''].filter(Boolean).join(' · ')) + '</span></span><small>' + timeAgo(a.em) + '</small></button>').join('') + '</div>' : '<div class="card empty">Sem avisos ainda.</div>');
-  if (S.me && (S.me.id || S.mode === 'demo')) DB.marcarLidos().then(t => { S.me.avisos_vistos_em = t; renderNav(); }).catch(() => {});
+  if (S.me && (S.me.id || S.mode === 'demo' || openMode())) DB.marcarLidos().then(t => { S.me.avisos_vistos_em = t; renderNav(); }).catch(() => {});
   return { title:crumb('Avisos', 'Kits novos, aprovados e alterados'), html };
 };
 SHEETS.mais = async () => {
@@ -1758,7 +1763,8 @@ SHEETS.mais = async () => {
   let html = '<div class="stack"><div class="userline" style="padding:4px 2px"><span class="av">' + esc((S.me.nome || '?').slice(0, 2).toUpperCase()) + '</span><div><b>' + esc(S.me.nome) + '</b>' + esc(S.me.email || '') + ' · ' + esc(S.me.papel) + '</div></div><div class="listbox">'
     + b('go', 'book', 'Catálogo Rev. 10 (o que falta cadastrar)', ' data-v="referencia"') + b('open-avisos', 'bell', 'Avisos' + (unreadCount() ? ' <span class="pill t-ok">' + unreadCount() + ' novos</span>' : ''))
     + (canEdit() ? b('new-kit', 'plus', 'Cadastrar kit') + b('new-peca', 'part', 'Cadastrar peça') : '')
-    + (isAdmin() ? b('open-usuarios', 'users', 'Usuários e permissões') + b('open-config', 'gear', 'Configuração') : '')
+    + (openMode() ? b('open-nome', 'edit', 'Meu nome neste aparelho: <b>' + esc(S.me.nome || 'sem nome') + '</b>') : '')
+    + (realAdmin() && S.mode === 'supabase' ? b('open-usuarios', 'users', 'Usuários e permissões') : '') + (isAdmin() ? b('open-config', 'gear', 'Configuração') : '')
     + b('theme', 'info', 'Tema claro/escuro') + (S.mode === 'supabase' && S.me.id ? b('logout', 'out', 'Sair') : '') + '</div>';
   if (S.mode === 'demo') html += '<section class="sec"><div class="sec-h"><h3>Demonstração</h3></div><label class="lbl">Testar como<select class="field" id="demoRole">' + ['admin', 'editor', 'leitor'].map(r => '<option' + (r === S.me.papel ? ' selected' : '') + '>' + r + '</option>').join('') + '</select></label><button class="btn small ghost danger" type="button" data-act="demo-reset">Zerar a demonstração</button></section>';
   return { title:crumb('Mais', ''), html:html + '</div>' };
@@ -1772,7 +1778,8 @@ SHEETS.usuarios = async () => {
 };
 SHEETS.config = async () => {
   const c = S.cfg;
-  const html = '<div class="stack"><section class="sec"><div class="sec-h"><h3>Geral</h3></div><div class="fgrid">'
+  const html = '<div class="stack">' + (openMode() ? '<div class="notice">' + IC.warn + '<span><b>Acesso livre ligado:</b> qualquer pessoa com o link consulta e cadastra; o nome de cada aparelho vai para o histórico. Para ligar o login: crie os usuários no Supabase (Authentication → Users) e rode <span class="mono">update public.config set acesso_livre = false;</span></span></div>' : '')
+    + '<section class="sec"><div class="sec-h"><h3>Geral</h3></div><div class="fgrid">'
     + '<label class="lbl">Empresa (rodapé)<input class="field" id="cfgEmp" value="' + esc(c.empresa || '') + '"></label>'
     + '<label class="lbl">Revisão do catálogo (rodapé)<input class="field" id="cfgRev" type="number" min="0" value="' + esc(c.revisao_catalogo || 0) + '"></label>'
     + '<label class="lbl wide" style="flex-direction:row;align-items:center;gap:10px"><input type="checkbox" id="cfgPub"' + (c.leitura_publica ? ' checked' : '') + ' style="width:20px;height:20px"> Consulta sem login (qualquer pessoa com o link vê kits e usa a calculadora; só quem tem login cadastra)</label></div>'
@@ -1800,6 +1807,7 @@ SHEETS.import = async () => {
     + '<div class="sticky-actions"><button class="btn ghost" type="button" data-act="back">Cancelar</button><button class="btn primary" type="button" data-act="imp-do">Importar</button></div></div>';
   return { title:crumb('Importar pedido', pi.name), html };
 };
+SHEETS.nome = async () => ({ title:crumb('Seu nome', 'vai para o histórico e para os avisos'), html:'<div class="stack"><p style="margin:0">O acesso está sem login por enquanto. Diga quem está usando este aparelho, para o histórico mostrar quem cadastrou ou mudou cada ficha.</p><label class="lbl">Nome<input class="field" id="meuNome" value="' + esc(S.me.nome || '') + '" autocomplete="name" maxlength="40"></label><button class="btn primary" type="button" data-act="nome-save">' + IC.check + ' Salvar</button></div>', after:() => setTimeout(() => $('#meuNome') && $('#meuNome').focus(), 60) });
 SHEETS.novasenha = async () => ({ title:crumb('Nova senha', ''), html:'<div class="stack"><label class="lbl">Nova senha<input class="field" id="np1" type="password" autocomplete="new-password"></label><label class="lbl">Repita<input class="field" id="np2" type="password" autocomplete="new-password"></label><button class="btn primary" type="button" data-act="np-save">Salvar senha</button></div>' });
 
 /* ================= mensagens ================= */
@@ -1901,6 +1909,8 @@ const ACT = {
   'open-avisos': () => pushSheet({ type:'avisos' }), 'open-mais': () => pushSheet({ type:'mais' }),
   'open-usuarios': () => pushSheet({ type:'usuarios' }), 'open-config': () => pushSheet({ type:'config' }),
   'logout': async () => { await DB.signOut(); location.reload(); },
+  'open-nome': () => pushSheet({ type:'nome' }),
+  'nome-save': () => { const v = ($('#meuNome').value || '').trim(); if (!v) return toast('Escreva seu nome.'); lsSet('ju_nome', v); S.me.nome = v; S.stack = []; renderSheet(); renderNav(); toast('Pronto, ' + v + '.'); },
   'back': () => popSheet(), 'close-sheet': () => closeSheet(),
   'new-kit': () => { if (!canEdit()) return toast('Sem permissão para cadastrar.'); pushSheet({ type:'kitedit' }); },
   'new-kit-ref': el => pushSheet({ type:'kitedit', refCod:el.dataset.k }),
@@ -1961,7 +1971,7 @@ const ACT = {
   'calc-clear': () => { if (!S.calc.linhas.length) return; if (!arm('clear', 'Toque de novo em Limpar para tirar todos os kits.')) return; S.calc.linhas = []; S.calc.prodId = null; S.calc.prodNome = ''; calcSave(); renderView(); runCalc(); },
   'calc-import': () => { const f = $('#orderFile'); f.value = ''; f.click(); },
   'calc-template': () => downloadTemplate(), 'calc-export': () => exportCalc(), 'calc-print': () => printCalc(),
-  'calc-save': () => { if (!S.calc.linhas.length) return toast('Adicione kits antes de salvar.'); if (S.mode === 'supabase' && !(S.me && S.me.id)) return toast('Entre com seu login para salvar produções.'); pushSheet({ type:'savecalc' }); },
+  'calc-save': () => { if (!S.calc.linhas.length) return toast('Adicione kits antes de salvar.'); if (S.mode === 'supabase' && !(S.me && S.me.id) && !openMode()) return toast('Entre com seu login para salvar produções.'); pushSheet({ type:'savecalc' }); },
   'prod-save': el => withBusy(el, async () => { const nome = ($('#prodNome').value || '').trim() || 'Produção'; const over = $('#prodOver') && $('#prodOver').checked; const id = await DB.saveProducao(nome, S.calc.linhas, over ? S.calc.prodId : null); S.calc.prodId = id; S.calc.prodNome = nome; calcSave(); S.stack = []; renderSheet(); renderView(); toast('Produção salva.'); }),
   'open-prods': () => pushSheet({ type:'prods' }),
   'prod-open': el => { const p = (S._prods || []).find(x => x.id === Number(el.dataset.id)); if (!p) return; S.calc.linhas = p.linhas.filter(l => S.kitById.has(l.kit_id)).map(l => ({ kit_id:l.kit_id, qtde:Number(l.qtde) })); S.calc.prodId = p.id; S.calc.prodNome = p.nome; calcSave(); S.stack = []; renderSheet(); go('calculadora'); runCalc(); },
@@ -2040,9 +2050,9 @@ function renderLogin(msg, pub){
     + '<button class="btn primary" type="submit">Entrar</button><button class="btn ghost small" type="button" data-act="lg-forgot">Esqueci a senha</button>'
     + (pub ? '<button class="btn small" type="button" data-act="lg-public">Só consultar, sem entrar</button>' : '') + '</form></div>';
 }
-function setupHtml(msg){
-  return '<div class="card" style="max-width:720px;margin:24px auto;display:flex;flex-direction:column;gap:12px"><h2 style="font-size:24px">Falta preparar o banco</h2>'
-    + '<p style="margin:0">A página abriu, mas não conseguiu ler as tabelas no Supabase.</p><ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px"><li>No Supabase, abra <b>SQL Editor</b> e rode o arquivo <span class="mono">criar_banco_calculadora.sql</span> inteiro.</li><li>Em <b>Authentication → Users</b>, crie seu usuário (o primeiro vira admin).</li><li>Recarregue esta página.</li></ol>'
+function setupHtml(msg, titulo){
+  return '<div class="card" id="setupCard" style="max-width:720px;margin:24px auto;display:flex;flex-direction:column;gap:12px"><h2 style="font-size:24px">' + esc(titulo || 'Falta preparar o banco') + '</h2>'
+    + '<p style="margin:0">A página abriu, mas o banco no Supabase ainda não está na versão desta página.</p><ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px"><li>No Supabase, abra <b>SQL Editor</b>, cole o arquivo <span class="mono">criar_banco_calculadora.sql</span> inteiro e clique em <b>Run</b>. Pode rodar de novo: não apaga dados.</li><li>Recarregue esta página.</li></ol>'
     + '<p class="muted" style="margin:0;font-size:13px">Detalhe técnico: ' + esc(msg) + '</p><div><button class="btn primary" type="button" onclick="location.reload()">Tentar de novo</button></div></div>';
 }
 let started = false;
@@ -2058,7 +2068,8 @@ async function start(){
     $('#view').innerHTML = S.mode === 'supabase' ? setupHtml(errMsg(e)) : '<div class="card empty">Não consegui abrir: ' + esc(errMsg(e)) + '</div>';
     setDb('Banco com problema', false); return;
   }
-  setDb(S.mode === 'demo' ? 'Demonstração (navegador)' : 'Supabase · conectado', S.mode !== 'demo');
+  setDb(S.mode === 'demo' ? 'Demonstração (navegador)' : 'Supabase · conectado' + (openMode() ? ' · sem login' : ''), S.mode !== 'demo');
+  if (openMode() && !S.me.nome) setTimeout(() => pushSheet({ type:'nome' }), 300);
   calcLoad();
   const h = location.hash.slice(1); go(VIEWS[h] ? h : 'kits');
   runCalc();
@@ -2085,7 +2096,13 @@ async function probeRef(){
   let ses = null; try { [, ses] = await Promise.all([probeRef(), DB.session()]); } catch(e){}
   if (ses) return start();
   const cfg = await DB.publicConfig();
-  renderLogin('', !!cfg.leitura_publica);
+  if (cfg.acesso_livre) return start();          // sem login por enquanto
+  if (cfg.acesso_livre !== false){               // SQL antigo (sem acesso_livre) ou banco fora do ar: explica em vez de mostrar o login
+    setDb('Banco desatualizado', false);
+    $('#view').innerHTML = setupHtml(cfg.__erro || 'config.acesso_livre não existe: o banco ainda está com o SQL antigo, que exige login.', 'Falta atualizar o banco');
+    return;
+  }
+  renderLogin('', !!cfg.leitura_publica);        // login ligado de propósito (acesso_livre = false)
 })();
 })();
 </script>
