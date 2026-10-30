@@ -758,7 +758,7 @@ async function resizeImage(file, max, quality){
 const refImgs = new Map();
 function loadRefImg(url){   // imagens do catálogo (páginas sNNN e folhas de fotos fNN), com CORS para poder recortar
   if (!refImgs.has(url)) refImgs.set(url, new Promise((res, rej) => { const im = new Image(); im.crossOrigin = 'anonymous';
-    im.onload = () => res(im); im.onerror = () => { refImgs.delete(url); rej(Object.assign(new Error('Não consegui abrir a imagem do catálogo para recortar.'), { friendly:true })); }; im.src = url; }));
+    im.onload = () => res(im); im.onerror = () => { refImgs.delete(url); rej(Object.assign(new Error('Não consegui abrir a imagem do catálogo para recortar (na prévia do Claude isso pode acontecer; na página publicada as fotos vêm prontas do Storage).'), { friendly:true })); }; im.src = url; }));
   return refImgs.get(url);
 }
 function cropToBlob(im, sx, sy, sw, sh, q){
@@ -777,15 +777,41 @@ async function cropRefLabel(r){
   if (!r || !r.lb || !REF.pm.map[String(r.p)]) throw Object.assign(new Error('Essa página do catálogo não tem etiqueta.'), { friendly:true });
   return cropRefBox(r.p, r.lb, 2);
 }
-/* foto da peça tirada do catálogo: primeiro das folhas fNN.webp (recorte limpo, sem os números),
-   se elas ainda não subiram, recorta da página do kit (pode vir com o número por cima) */
+/* fotos e etiquetas do catálogo
+   - Supabase: arquivos prontos no Storage (catalogo/referencia/fotos/<peça>.webp e referencia/etiquetas/pNNN.webp).
+     O app só aponta para eles: não recorta nada no navegador (sem canvas, sem CORS).
+   - Demonstração: recorta das folhas fNN.webp / páginas sNNN.webp que vêm junto da prévia. */
 const refFotoOf = cod => (REF.fp && cod && REF.fp[chave(cod)]) || null;
-const refFotoPossivel = (cod, r, item) => !!(cod && (refFotoOf(cod) || (r && r.ph && r.ph[item])));
-async function refFotoBlob(cod, r, item){
+const refFotoKey = cod => chave(cod).replace(/[^A-Z0-9]/g, '_');
+const refFotoPath = cod => refFotoOf(cod) ? 'referencia/fotos/' + refFotoKey(cod) + '.webp' : null;
+const refEtqPath = r => (r && r.lb && r.p) ? 'referencia/etiquetas/p' + String(r.p).padStart(3, '0') + '.webp' : null;
+const refFotoPossivel = (cod, r, item) => !!(cod && (refFotoOf(cod) || (S.mode === 'demo' && r && r.ph && r.ph[item])));
+const imgChecks = new Map();
+function imgOk(url){   // a imagem existe? (só carrega, sem CORS)
+  if (!imgChecks.has(url)) imgChecks.set(url, new Promise(res => { const im = new Image(); const t = setTimeout(() => res(false), 9000);
+    im.onload = () => { clearTimeout(t); res(true); }; im.onerror = () => { clearTimeout(t); res(false); }; im.src = url; }));
+  return imgChecks.get(url).then(ok => { if (!ok) imgChecks.delete(url); return ok; });
+}
+const semArquivo = (oque, pasta) => Object.assign(new Error(oque + ' ainda não está no Storage (referencia/' + pasta + '). Suba as imagens em Configuração › Imagens do catálogo.'), { friendly:true });
+async function refFoto(cod, r, item){   // → { path } no Supabase, { blob } na demonstração, null se o catálogo não tem foto dessa peça
+  if (S.mode !== 'demo'){
+    const path = refFotoPath(cod); if (!path) return null;
+    if (!(await imgOk(fotoUrl(path)))) throw semArquivo('A foto do catálogo', 'fotos');
+    return { path };
+  }
   const e = refFotoOf(cod);
-  if (e){ try { const im = await loadRefImg(CONFIG.refImgBase + 'f' + String(e[0]).padStart(2, '0') + '.webp'); return await cropToBlob(im, e[1], e[2], e[3], e[4], 0.9); } catch(err){} }
+  if (e){ try { const im = await loadRefImg(CONFIG.refImgBase + 'f' + String(e[0]).padStart(2, '0') + '.webp'); return { blob:await cropToBlob(im, e[1], e[2], e[3], e[4], 0.9) }; } catch(err){} }
   const b = r && r.ph && r.ph[item];
-  return b ? cropRefBox(r.p, b, 1) : null;
+  return b ? { blob:await cropRefBox(r.p, b, 1) } : null;
+}
+async function refEtiqueta(r){   // → caminho da imagem da etiqueta
+  if (!r || !r.lb) throw Object.assign(new Error('Essa página do catálogo não tem etiqueta.'), { friendly:true });
+  if (S.mode !== 'demo'){
+    const path = refEtqPath(r);
+    if (!(await imgOk(fotoUrl(path)))) throw semArquivo('A etiqueta do catálogo', 'etiquetas');
+    return path;
+  }
+  return DB.upload(await cropRefLabel(r), 'kits/' + slug(r.k) + '/etiqueta-' + Date.now() + '.jpg');
 }
 function pickPhoto(){
   return new Promise(resolve => {
@@ -1141,6 +1167,7 @@ function SupaStore(){
       await q(sb.storage.from(CONFIG.bucket).upload(path, small.blob, { contentType:'image/jpeg', upsert:true, cacheControl:'3600' }));
       return path;
     },
+    uploadRaw: (blob, path, contentType) => q(sb.storage.from(CONFIG.bucket).upload(path, blob, { contentType, upsert:true, cacheControl:'86400' })),
     url: path => /^(https?:|data:)/.test(path) ? path : CONFIG.supabaseUrl + '/storage/v1/object/public/' + CONFIG.bucket + '/' + String(path).split('/').map(encodeURIComponent).join('/'),
     explode: lista => q(sb.rpc('explodir_lista', { p_itens:lista })),
     ondeUsa: pid => q(sb.rpc('onde_usa', { p_peca_id:pid })),
@@ -1206,8 +1233,7 @@ function navHtml(rail){
   const b = n => n ? '<span class="badge">' + (n > 99 ? '99+' : n) + '</span>' : '';
   const tab = v => '<button class="tab" type="button" data-act="go" data-v="' + v + '"' + (S.view === v ? ' aria-current="page"' : '') + '><span class="ic">' + IC[VIEWS[v].ic] + (!rail && v === 'pendencias' ? b(pendCount()) : '') + '</span><span class="lb">' + (rail ? VIEWS[v].t : VIEWS[v].s) + '</span>' + (rail && v === 'pendencias' ? b(pendCount()) : '') + '</button>';
   if (rail){
-    return (canEdit() ? '<button class="btn primary rail-add" type="button" data-act="new-kit">' + IC.plus + ' Cadastrar kit</button>' : '')
-      + ['kits', 'pecas', 'calculadora', 'pendencias', 'referencia'].map(tab).join('')
+    return ['kits', 'pecas', 'calculadora', 'pendencias'].map(tab).join('')
       + '<button class="tab" type="button" data-act="open-avisos"><span class="ic">' + IC.bell + '</span><span class="lb">Avisos</span>' + b(unreadCount()) + '</button>'
       + (realAdmin() && S.mode === 'supabase' ? '<button class="tab" type="button" data-act="open-usuarios"><span class="ic">' + IC.users + '</span><span class="lb">Usuários</span></button>' : '')
       + (isAdmin() ? '<button class="tab" type="button" data-act="open-config"><span class="ic">' + IC.gear + '</span><span class="lb">Configuração</span></button>' : '');
@@ -1245,14 +1271,15 @@ async function reloadLists(opts){
   if (!opts || opts.pend !== false) tasks.push(DB.pendencias().then(r => { S.pend = r; }).catch(() => {}));
   await Promise.all(tasks); indexData(); softRefresh();
 }
-const demoStrip = () => S.mode === 'demo' ? '<div class="demo-strip">' + IC.info.replace('<svg', '<svg width="18" height="18"') + '<span><b>Demonstração.</b> O que você cadastrar aqui fica só neste navegador. Na versão publicada, tudo vai para o Supabase com login.</span></div>' : '';
+const demoStrip = () => S.mode === 'demo' ? '<div class="demo-strip">' + IC.info.replace('<svg', '<svg width="18" height="18"') + '<span><b>Demonstração.</b> Esta é só a prévia: o que você cadastrar aqui fica neste navegador e não vai para o banco. O cadastro de verdade é na página publicada no GitHub (Supabase).</span></div>' : '';
 
 /* ================= Kits ================= */
 function filteredKits(){
   const F = S.kitsF, q = norm(F.q).trim();
-  return S.kits.filter(k => (F.cli === 'all' || String(k.cliente_id) === F.cli) && (F.st === 'all' || k.status === F.st)
+  return S.kits.filter(k => (F.cli === 'all' || String(k.cliente_id) === F.cli) && (F.st === 'all' || k.status === F.st || (F.st === 'conferir' && kitConferir(k)))
     && (!q || norm([k.cod_cliente, k.cod_universal, k.descricao, (k.codigos_alt || []).join(' ')].join(' ')).includes(q) || kitKey(k.cod_cliente) === kitKey(F.q)));
 }
+const kitConferir = k => k.status !== 'aprovado' && /conferir/i.test(k.ref_catalogo || '');   // importado com dúvida do catálogo
 function refCoverage(){
   const have = new Set(S.kits.filter(k => k.cliente === 'SABÓ').map(k => kitKey(k.cod_cliente)));
   const done = REF.kits.filter(r => have.has(kitKey(r.k))).length;
@@ -1265,19 +1292,17 @@ const kcard = k => '<button class="kcard" type="button" data-act="open-kit" data
   + '<span class="foot"><span>' + esc(k.cliente || '') + '</span><span>' + k.n_itens + ' itens</span>' + (k.n_pendencias ? '<span class="tag warn">' + k.n_pendencias + ' pendência' + (k.n_pendencias > 1 ? 's' : '') + '</span>' : '')
   + '<span>' + k.n_fotos + ' foto' + (k.n_fotos === 1 ? '' : 's') + '</span>' + (k.revisao ? '<span>rev. ' + k.revisao + '</span>' : '') + '</span></span></button>';
 function renderKits(v){
-  const F = S.kitsF, list = filteredKits(), cov = refCoverage();
+  const F = S.kitsF, list = filteredKits(), nConf = S.kits.filter(kitConferir).length;
   const byCli = new Map(); S.kits.forEach(k => byCli.set(String(k.cliente_id), (byCli.get(String(k.cliente_id)) || 0) + 1));
   const bySt = new Map(); S.kits.forEach(k => bySt.set(k.status, (bySt.get(k.status) || 0) + 1));
   const chip = (grp, val, label, n) => '<button class="chip" type="button" data-act="kits-f" data-g="' + grp + '" data-val="' + val + '" aria-pressed="' + (F[grp] === val) + '">' + esc(label) + (n != null ? ' <b>' + n + '</b>' : '') + '</button>';
   v.innerHTML = demoStrip()
-    + '<div class="card" style="margin-bottom:14px"><div class="row"><div style="flex:1;min-width:220px"><b>' + cov.done + ' de ' + cov.total + '</b> kits do catálogo Sabó Rev. 10 já cadastrados'
-    + '<div class="progress big" style="margin-top:8px"><i style="width:' + (cov.total ? (100 * cov.done / cov.total).toFixed(1) : 0) + '%"></i></div></div>'
-    + '<button class="btn small" type="button" data-act="go" data-v="referencia">' + IC.book + ' Ver os que faltam</button></div></div>'
     + '<div class="list-head"><div class="toolbar"><label class="search"><span class="sr">Buscar kit</span>' + IC.search + '<input class="field" id="kitsQ" type="search" placeholder="Código, descrição, cód. universal…" value="' + esc(F.q) + '" autocomplete="off"></label>'
     + (canEdit() ? '<button class="btn primary" type="button" data-act="new-kit">' + IC.plus + ' Novo kit</button>' : '')
     + '<button class="btn" type="button" data-act="print-catalog" title="Imprimir/PDF das fichas filtradas">' + IC.print + ' PDF</button></div>'
     + '<div class="chips">' + chip('cli', 'all', 'Todos os clientes', S.kits.length) + S.clientes.map(c => chip('cli', String(c.id), c.nome, byCli.get(String(c.id)) || 0)).join('') + '</div>'
-    + '<div class="chips">' + chip('st', 'all', 'Todos', null) + Object.keys(STATUS).map(s => chip('st', s, STATUS[s].l, bySt.get(s) || 0)).join('') + '</div></div>'
+    + '<div class="chips">' + chip('st', 'all', 'Todos', null) + Object.keys(STATUS).map(s => chip('st', s, STATUS[s].l, bySt.get(s) || 0)).join('')
+    + (nConf ? chip('st', 'conferir', 'Com dúvida do catálogo', nConf) : '') + '</div></div>'
     + (list.length ? '<div class="kit-grid">' + list.slice(0, F.shown).map(kcard).join('') + '</div>'
       + (list.length > F.shown ? '<div class="more"><button class="btn" type="button" data-act="kits-more">Mostrar mais (' + (list.length - F.shown) + ')</button></div>' : '')
       : '<div class="card empty">' + (S.kits.length ? 'Nenhum kit com esse filtro.' : 'Nenhum kit cadastrado ainda.' + (canEdit() ? '<br><br><button class="btn primary" type="button" data-act="new-kit">' + IC.plus + ' Cadastrar o primeiro kit</button>' : '')) + '</div>');
@@ -1590,9 +1615,9 @@ function newDraft(base){
     itens:[{ item:'01', codigo:'', qtde:1, aplicacao:'', espessura:'', fornecedor:'', cod_item_cliente:'', pendencia:'' }], fotos:[], dirty:false, err:'' }, base || {});
 }
 function etqBox(){
-  const K = S.editor.kit, r = refKit(K.cod_cliente), canCrop = !!(r && r.lb && REF.pm.map[String(r.p)]);
+  const K = S.editor.kit, r = refKit(K.cod_cliente), canCrop = !!(r && r.lb && (S.mode !== 'demo' || REF.pm.map[String(r.p)]));
   return '<div class="etq-box">' + (K.etiqueta_path ? '<img src="' + esc(fotoUrl(K.etiqueta_path)) + '" alt="Etiqueta">' : '<span class="muted" style="font-size:13px">Sem imagem da etiqueta: a ficha mostra o código grande no lugar.</span>')
-    + '<div class="row"><button class="btn small" type="button" data-act="ed-etq-up">' + IC.camera + ' Enviar imagem da etiqueta</button>' + (canCrop ? '<button class="btn small" type="button" data-act="ed-etq-crop">' + IC.wand + ' Recortar do catálogo</button>' : '')
+    + '<div class="row"><button class="btn small" type="button" data-act="ed-etq-up">' + IC.camera + ' Enviar imagem da etiqueta</button>' + (canCrop ? '<button class="btn small" type="button" data-act="ed-etq-crop">' + IC.wand + (S.mode === 'demo' ? ' Recortar do catálogo' : ' Etiqueta do catálogo') + '</button>' : '')
     + (K.etiqueta_path ? '<button class="btn small ghost danger" type="button" data-act="ed-etq-del">Tirar</button>' : '') + '</div></div>';
 }
 function draftFromData(data){
@@ -1608,7 +1633,12 @@ function fillFromRef(ed, r){
     pendencia:(!t[1] || t[2] == null) ? 'veio sem ' + (!t[1] && t[2] == null ? 'código e qtde' : !t[1] ? 'código' : 'qtde') + ' no catálogo Rev. 10' : '' }));
   ed.dirty = true;
   if (r.lb && !ed.kit.etiqueta_path && canEdit()) autoCropLabel(r);
-  if (canEdit()) autoFotos(ed).then(n => { if (n) toast(n + (n > 1 ? ' fotos do catálogo' : ' foto do catálogo') + ' para conferir. Só vão para o banco quando você salvar.', null, 5000); });
+  if (canEdit()) autoFotos(ed).then(res => avisoFotos(res, false));
+}
+function avisoFotos(res, sempre){
+  if (res.n) toast(res.n + (res.n > 1 ? ' fotos do catálogo' : ' foto do catálogo') + ' para conferir. Só vão para o banco quando você salvar.' + (res.faltam ? ' ' + res.faltam + ' não estão no Storage.' : ''), null, 6000);
+  else if (res.faltam) toast(errMsg(res.erro), null, 8000);
+  else if (sempre) toast('Todos os itens já têm foto (ou a peça não tem foto no catálogo).', null, 4500);
 }
 /* ---------- foto de cada item (é a foto da peça: vale para todos os kits que usam a peça) ---------- */
 function fotoState(it, ed){
@@ -1636,22 +1666,25 @@ function fotoStrip(it, i){
     + '</div></div></div>';
 }
 function drawFotoStrip(i){ const ed = S.editor, el = $('#fp' + i); if (ed && el && ed.itens[i]) el.outerHTML = fotoStrip(ed.itens[i], i); }
-function setItemFoto(it, blob, src){
-  if (it._foto) try { URL.revokeObjectURL(it._foto.url); } catch(e){}
-  if (blob) it._foto = { blob, url:URL.createObjectURL(blob), src }; else delete it._foto;
+function setItemFoto(it, f, src){   // f: { path } (arquivo do catálogo no Storage), { blob } ou o arquivo escolhido; null tira
+  if (it._foto && it._foto.blob) try { URL.revokeObjectURL(it._foto.url); } catch(e){}
+  if (!f){ delete it._foto; return; }
+  if (f.path) it._foto = { path:f.path, url:fotoUrl(f.path), src };
+  else { const blob = f.blob || f; it._foto = { blob, url:URL.createObjectURL(blob), src }; }
 }
 async function autoFotos(ed){   // põe a foto do catálogo em todo item que ainda não tem foto nenhuma
-  const r = refKit(ed.kit.cod_cliente); let n = 0;
-  for (const it of ed.itens.slice()){
-    if (!String(it.codigo || '').trim() || fotoState(it, ed) || !refFotoPossivel(it.codigo, r, pad2(it.item))) continue;
-    try { const blob = await refFotoBlob(it.codigo, r, pad2(it.item)); if (!blob || S.editor !== ed || it._foto) continue; setItemFoto(it, blob, 'catalogo'); n++; } catch(e){}
-  }
+  const r = refKit(ed.kit.cod_cliente); let n = 0, faltam = 0, erro = null;
+  await Promise.all(ed.itens.slice().map(async it => {
+    if (!String(it.codigo || '').trim() || fotoState(it, ed) || !refFotoPossivel(it.codigo, r, pad2(it.item))) return;
+    try { const f = await refFoto(it.codigo, r, pad2(it.item)); if (!f || S.editor !== ed || it._foto) return; setItemFoto(it, f, 'catalogo'); n++; }
+    catch(e){ faltam++; erro = e; }
+  }));
   if (S.editor === ed && n) drawEdItens();
-  return n;
+  return { n, faltam, erro };
 }
 async function autoCropLabel(r){
-  try { const blob = await cropRefLabel(r); const path = await DB.upload(blob, 'kits/' + slug(r.k) + '/etiqueta-' + Date.now() + '.jpg'); if (S.editor){ S.editor.kit.etiqueta_path = path; S.editor.dirty = true; const b = $('#edEtq'); if (b) b.innerHTML = etqBox(); } }
-  catch(e){ toast('Etiqueta não recortada: ' + errMsg(e)); }
+  try { const path = await refEtiqueta(r); if (S.editor){ S.editor.kit.etiqueta_path = path; S.editor.dirty = true; const b = $('#edEtq'); if (b) b.innerHTML = etqBox(); } }
+  catch(e){ toast('Etiqueta: ' + errMsg(e), null, 6000); }
 }
 function codeHint(it){
   if (!it.codigo) return it.pendencia ? '<span>Sem código: entra como pendência</span>' : '<span class="muted">Digite o código da peça (ex.: 15.146 - B)</span>';
@@ -1695,7 +1728,7 @@ SHEETS.kitedit = async t => {
     if (t.id){ const data = await DB.kit(t.id); S.editor = draftFromData(data); }
     else { S.editor = newDraft(); if (t.refCod){ const r = refKit(t.refCod); if (r){ S.editor.kit.cod_cliente = r.k; fillFromRef(S.editor, r); S.editor.dirty = false; } } }
     S.editor._for = t;
-    if (t.autoFotos){ const ed0 = S.editor; autoFotos(ed0).then(n => { if (n) ed0.dirty = true; toast(n ? n + (n > 1 ? ' fotos do catálogo' : ' foto do catálogo') + ' para conferir. Confira e salve.' : 'Nenhuma foto nova no catálogo para esses itens.', null, 5000); }); }
+    if (t.autoFotos){ const ed0 = S.editor; autoFotos(ed0).then(res => { if (res.n) ed0.dirty = true; avisoFotos(res, true); }); }
   }
   const ed = S.editor, K = ed.kit;
   const inp = (key, label, extra, wide) => '<label class="lbl' + (wide ? ' wide' : '') + '">' + label + '<input class="field" data-ed="k" data-f="' + key + '" value="' + esc(K[key] == null ? '' : (Array.isArray(K[key]) ? K[key].join(', ') : K[key])) + '"' + (extra || '') + '></label>';
@@ -1770,7 +1803,7 @@ async function edSave(){
       const pecaDo = new Map(((salvo && salvo.itens) || []).map(x => [x.item, x.peca]));
       for (const it of pend){
         const p = pecaDo.get(pad2(it.item));
-        try { if (!p) throw new Error('sem peça'); const path = await DB.upload(it._foto.blob, 'pecas/' + slug(p.codigo) + '-' + Date.now() + '.jpg'); await DB.setPecaFoto(p.id, path); ok++; }
+        try { if (!p) throw new Error('sem peça'); const path = it._foto.path || await DB.upload(it._foto.blob, 'pecas/' + slug(p.codigo) + '-' + Date.now() + '.jpg'); await DB.setPecaFoto(p.id, path); ok++; }
         catch(e){ falhou++; }
         btn.textContent = 'Enviando fotos… ' + (ok + falhou) + ' de ' + pend.length;
       }
@@ -1860,8 +1893,7 @@ SHEETS.avisos = async () => {
 SHEETS.mais = async () => {
   const b = (act, ic, label, extra) => '<button class="lrow" type="button" data-act="' + act + '"' + (extra || '') + '><span class="ic" style="color:var(--ink-2)">' + IC[ic].replace('<svg', '<svg width="20" height="20"') + '</span><span class="c" style="font-family:var(--f-body)">' + label + '</span><span class="muted">' + IC.chev.replace('<svg', '<svg width="16" height="16"') + '</span></button>';
   let html = '<div class="stack"><div class="userline" style="padding:4px 2px"><span class="av">' + esc((S.me.nome || '?').slice(0, 2).toUpperCase()) + '</span><div><b>' + esc(S.me.nome) + '</b>' + esc(S.me.email || '') + ' · ' + esc(S.me.papel) + '</div></div><div class="listbox">'
-    + b('go', 'book', 'Catálogo Rev. 10 (o que falta cadastrar)', ' data-v="referencia"') + b('open-avisos', 'bell', 'Avisos' + (unreadCount() ? ' <span class="pill t-ok">' + unreadCount() + ' novos</span>' : ''))
-    + (canEdit() ? b('new-kit', 'plus', 'Cadastrar kit') + b('new-peca', 'part', 'Cadastrar peça') : '')
+    + b('open-avisos', 'bell', 'Avisos' + (unreadCount() ? ' <span class="pill t-ok">' + unreadCount() + ' novos</span>' : ''))
     + (openMode() ? b('open-nome', 'edit', 'Meu nome neste aparelho: <b>' + esc(S.me.nome || 'sem nome') + '</b>') : '')
     + (realAdmin() && S.mode === 'supabase' ? b('open-usuarios', 'users', 'Usuários e permissões') : '') + (isAdmin() ? b('open-config', 'gear', 'Configuração') : '')
     + b('theme', 'info', 'Tema claro/escuro') + (S.mode === 'supabase' && S.me.id ? b('logout', 'out', 'Sair') : '') + '</div>';
@@ -1878,6 +1910,9 @@ SHEETS.usuarios = async () => {
 SHEETS.config = async () => {
   const c = S.cfg;
   const html = '<div class="stack">' + (openMode() ? '<div class="notice">' + IC.warn + '<span><b>Acesso livre ligado:</b> qualquer pessoa com o link consulta e cadastra; o nome de cada aparelho vai para o histórico. Para ligar o login: crie os usuários no Supabase (Authentication → Users) e rode <span class="mono">update public.config set acesso_livre = false;</span></span></div>' : '')
+    + (S.mode === 'supabase' && REF.fp ? '<section class="sec"><div class="sec-h"><h3>Imagens do catálogo Rev. 10</h3><span class="meta" id="imgStatus">conferindo…</span></div>'
+      + '<p class="muted" style="margin:0;font-size:13.5px">Fotos de ' + Object.keys(REF.fp).length + ' peças e ' + REF.kits.filter(k => k.lb).length + ' etiquetas recortadas do catálogo. Escolha o arquivo <span class="mono">imagens-catalogo-rev10.zip</span>: a página sobe tudo para o Storage (pasta referencia). Pode repetir: ela só troca.</p>'
+      + '<div class="row"><button class="btn primary small" type="button" data-act="cfg-imgs">' + IC.upload + ' Subir imagens do catálogo (.zip)</button></div></section>' : '')
     + '<section class="sec"><div class="sec-h"><h3>Geral</h3></div><div class="fgrid">'
     + '<label class="lbl">Empresa (rodapé)<input class="field" id="cfgEmp" value="' + esc(c.empresa || '') + '"></label>'
     + '<label class="lbl">Revisão do catálogo (rodapé)<input class="field" id="cfgRev" type="number" min="0" value="' + esc(c.revisao_catalogo || 0) + '"></label>'
@@ -1890,8 +1925,14 @@ SHEETS.config = async () => {
     + '<div class="row"><input class="field" id="newCli" placeholder="Novo cliente" style="max-width:240px"><button class="btn small" type="button" data-act="cli-add">' + IC.plus + ' Incluir</button></div></section>'
     + '<section class="sec"><div class="sec-h"><h3>Prédios e famílias</h3></div><div class="row">' + S.predios.map(p => '<span class="pill">' + esc(p.nome) + '</span>').join('') + '</div><div class="row"><input class="field" id="newPred" placeholder="Novo prédio" style="max-width:200px"><button class="btn small" type="button" data-act="lk-add" data-tab="predios">' + IC.plus + '</button></div>'
     + '<div class="row">' + S.familias.map(p => '<span class="pill">' + esc(p.nome) + '</span>').join('') + '</div><div class="row"><input class="field" id="newFam" placeholder="Nova família" style="max-width:200px"><button class="btn small" type="button" data-act="lk-add" data-tab="familias">' + IC.plus + '</button></div></section></div>';
-  return { title:crumb('Configuração', ''), html };
+  return { title:crumb('Configuração', ''), html, after:() => statusImagens() };
 };
+async function statusImagens(){
+  const el = $('#imgStatus'); if (!el) return;
+  const foto = refFotoPath((Object.keys(REF.fp)[0] || '')), etq = refEtqPath(REF.kits.find(k => k.lb));
+  const [a, b] = await Promise.all([foto ? imgOk(fotoUrl(foto)) : false, etq ? imgOk(fotoUrl(etq)) : false]);
+  const e2 = $('#imgStatus'); if (e2) e2.innerHTML = a && b ? '<span class="tag ok">no Storage</span>' : '<span class="tag warn">' + (a || b ? 'faltam ' + (a ? 'as etiquetas' : 'as fotos') : 'ainda não subiram') + '</span>';
+}
 SHEETS.prods = async () => {
   const ps = await DB.producoes();
   const html = ps.length ? '<div class="listbox">' + ps.map(p => '<div class="lrow"><span class="callout">' + p.linhas.length + '</span><span><span class="c" style="font-family:var(--f-body)">' + esc(p.nome) + '</span><br><span class="d">' + timeAgo(p.criado_em) + ' · ' + fmt(p.linhas.reduce((a, l) => a + Number(l.qtde), 0)) + ' jogos</span></span>'
@@ -1997,6 +2038,29 @@ SHEETS.savecalc = async () => ({ title:crumb('Salvar produção', ''), html:'<di
 
 /* ================= ações ================= */
 async function withBusy(el, fn){ if (el) el.disabled = true; try { return await fn(); } catch(e){ toast(errMsg(e)); } finally { if (el) el.disabled = false; } }
+/* sobe o imagens-catalogo-rev10.zip (pastas fotos/ e etiquetas/) para o Storage: catalogo/referencia/... */
+function pickFile(accept){
+  return new Promise(resolve => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = accept; inp.style.display = 'none';
+    inp.addEventListener('change', () => { resolve(inp.files && inp.files[0] ? inp.files[0] : null); inp.remove(); }); document.body.appendChild(inp); inp.click(); });
+}
+function loadScript(src){
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(Object.assign(new Error('Não consegui carregar o leitor de .zip (cdnjs.cloudflare.com).'), { friendly:true })); document.head.appendChild(s); });
+}
+async function subirImagensCatalogo(btn){
+  const file = await pickFile('.zip,application/zip'); if (!file) return;
+  if (typeof JSZip === 'undefined') await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+  btn.textContent = 'Abrindo o .zip…';
+  const zip = await JSZip.loadAsync(file), fila = [];
+  zip.forEach((path, f) => { if (f.dir) return; const m = path.match(/(?:^|\/)(fotos|etiquetas)\/([^/]+\.webp)$/i); if (m) fila.push({ f, dest:'referencia/' + m[1].toLowerCase() + '/' + m[2] }); });
+  if (!fila.length) throw Object.assign(new Error('Esse .zip não tem as pastas fotos/ e etiquetas/ do catálogo.'), { friendly:true });
+  const total = fila.length; let feitos = 0, falhas = 0;
+  const vez = async () => { while (fila.length){ const it = fila.shift();
+    try { const b = await it.f.async('uint8array'); await DB.uploadRaw(new Blob([b], { type:'image/webp' }), it.dest, 'image/webp'); } catch(e){ falhas++; }
+    feitos++; btn.textContent = 'Enviando ' + feitos + ' de ' + total + '…'; } };
+  await Promise.all(Array.from({ length:6 }, vez));
+  imgChecks.clear();
+  toast((total - falhas) + ' de ' + total + ' imagens no Storage' + (falhas ? '. ' + falhas + ' falharam: suba o .zip de novo (ele só troca).' : '. Pronto.'), null, 8000);
+}
 async function photoFor(prefix){
   const f = await pickPhoto(); if (!f) return null;
   toast('Enviando foto…', null, 2500);
@@ -2061,24 +2125,25 @@ const ACT = {
   }),
   'ed-it-ref': el => withBusy(el, async () => {
     const ed = S.editor, i = Number(el.dataset.i), it = ed && ed.itens[i]; if (!it) return;
-    const blob = await refFotoBlob(it.codigo, refKit(ed.kit.cod_cliente), pad2(it.item));
-    if (!blob) return toast('Essa peça não tem foto no catálogo.');
+    const f = await refFoto(it.codigo, refKit(ed.kit.cod_cliente), pad2(it.item));
+    if (!f) return toast('Essa peça não tem foto no catálogo.');
     if (S.editor !== ed) return;
-    setItemFoto(it, blob, 'catalogo'); ed.dirty = true; drawFotoStrip(i);
+    setItemFoto(it, f, 'catalogo'); ed.dirty = true; drawFotoStrip(i);
   }),
   'ed-it-tirar': el => { const ed = S.editor, i = Number(el.dataset.i), it = ed && ed.itens[i]; if (!it) return; setItemFoto(it, null); drawFotoStrip(i); },
   'ed-fotos-ref': el => withBusy(el, async () => {
     const ed = S.editor; if (!ed) return;
-    const n = await autoFotos(ed); if (n) ed.dirty = true;
-    toast(n ? n + (n > 1 ? ' fotos do catálogo' : ' foto do catálogo') + ' para conferir. Confira e salve.' : 'Todos os itens já têm foto (ou a peça não tem foto no catálogo).', null, 5000);
+    const res = await autoFotos(ed); if (res.n) ed.dirty = true;
+    avisoFotos(res, true);
   }),
   'kit-fotos-ref': el => pushSheet({ type:'kitedit', id:Number(el.dataset.id), autoFotos:true }),
+  'cfg-imgs': el => withBusy(el, async () => { const txt = el.innerHTML; try { await subirImagensCatalogo(el); } finally { el.innerHTML = txt; statusImagens(); } }),
   'ed-fill-ref': el => { const ed = S.editor; const r = refKit(ed.kit.cod_cliente); if (!r) return; if (ed.itens.some(i => i.codigo || i.aplicacao) && !arm('fill', 'Isso troca os itens atuais pelos do catálogo. Toque de novo para confirmar.')) return; fillFromRef(ed, r); renderSheet(true); toast('Preenchido com o catálogo Rev. 10. Confira e salve.'); },
   'ed-add-foto': el => withBusy(el, async () => { const ed = S.editor; const path = await photoFor('kits/' + slug(ed.kit.cod_cliente || 'novo') + '/foto'); if (!path) return; ed.fotos.push({ id:null, caminho:path, itens:[], legenda:'' }); ed.dirty = true; drawEdFotos(); toast('Foto incluída. Diga quais itens aparecem nela.'); }),
   'ed-del-foto': el => { S.editor.fotos.splice(Number(el.dataset.i), 1); S.editor.dirty = true; drawEdFotos(); },
   'ed-save': () => edSave(),
   'ed-etq-up': el => withBusy(el, async () => { const K = S.editor.kit; const p = await photoFor('kits/' + slug(K.cod_cliente || 'novo') + '/etiqueta'); if (!p) return; K.etiqueta_path = p; S.editor.dirty = true; $('#edEtq').innerHTML = etqBox(); }),
-  'ed-etq-crop': el => withBusy(el, async () => { const K = S.editor.kit; const r = refKit(K.cod_cliente); const blob = await cropRefLabel(r); K.etiqueta_path = await DB.upload(blob, 'kits/' + slug(K.cod_cliente) + '/etiqueta-' + Date.now() + '.jpg'); S.editor.dirty = true; $('#edEtq').innerHTML = etqBox(); toast('Etiqueta recortada da página do catálogo.'); }),
+  'ed-etq-crop': el => withBusy(el, async () => { const ed = S.editor, K = ed.kit; const path = await refEtiqueta(refKit(K.cod_cliente)); if (S.editor !== ed) return; K.etiqueta_path = path; ed.dirty = true; $('#edEtq').innerHTML = etqBox(); toast('Etiqueta do catálogo posta. Confira e salve.'); }),
   'ed-etq-del': () => { S.editor.kit.etiqueta_path = null; S.editor.dirty = true; $('#edEtq').innerHTML = etqBox(); },
   'pe-add-comp': () => { S.editor.comps.push({ codigo:'', qtde:1 }); S.editor.dirty = true; drawPeComps(); },
   'pe-del-comp': el => { S.editor.comps.splice(Number(el.dataset.i), 1); S.editor.dirty = true; drawPeComps(); },
