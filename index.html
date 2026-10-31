@@ -576,6 +576,20 @@ body.semsel,body.semsel *{user-select:none;-webkit-user-select:none}
 .fzv-page .ficha{pointer-events:none}
 .fzv-page .fz-ph.empty{visibility:hidden}
 @media (max-width:639px){ .fzv .v-top .t span{display:none} .fzv .fzv-zoom .vbtn[data-z="largura"]{display:none} }
+/* foto da peça e página do catálogo: clicar amplia / abre */
+.zoomavel{cursor:zoom-in}
+.fzv-page > .fzv-img{display:block;transform-origin:top left;max-width:none;pointer-events:none;user-select:none;-webkit-user-drag:none}
+.v-hot{position:absolute;inset:0;pointer-events:none}
+.v-hot .hot{pointer-events:auto}
+.v-items button[data-act]{cursor:pointer}
+.v-items button[data-act]:hover{background:rgba(255,255,255,.14)}
+.pg-strip{display:flex;gap:10px;overflow-x:auto;padding:10px 12px 12px}
+.pg-card{flex:none;display:flex;flex-direction:column;gap:6px;align-items:stretch;width:92px;padding:6px;border:1px solid var(--line);border-radius:10px;background:var(--surface);cursor:zoom-in;text-align:left}
+.pg-card:hover{border-color:var(--accent,#22a559)}
+.pg-card .page-thumb{width:100%}
+.pg-card .pg-l b{display:block;font-family:var(--f-mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pg-card .pg-l small{color:var(--ink-3);font-size:11px}
+.pg-mais{flex:none;align-self:center;text-align:center;color:var(--ink-3);font-weight:700;font-size:13px;padding:0 6px}
 /* baixar catálogo */
 .chkrow{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer}
 .chkrow input{width:20px;height:20px;accent-color:var(--brand,#22a559);flex:none}
@@ -1680,9 +1694,12 @@ function printCalc(){
 }
 
 /* ================= página do catálogo Rev. 10 (referência) ================= */
-const V = { page:null, zoom:1, pages:null };
-function openViewer(page){
-  V.pages = V.pages || Object.keys(REF.pm.map).map(Number).sort((a, b) => a - b);
+const V = { page:null, zoom:1, pages:null, todas:null, marca:null };
+/* opt.pages: só as páginas onde a peça aparece (‹ › anda só nelas); opt.marca: chave da peça destacada */
+function openViewer(page, opt){
+  opt = opt || {};
+  V.todas = V.todas || Object.keys(REF.pm.map).map(Number).sort((a, b) => a - b);
+  V.pages = opt.pages && opt.pages.length ? opt.pages : V.todas; V.marca = opt.marca || null;
   V.page = Number(page); V.zoom = 1;
   $('#viewer').classList.add('open'); document.body.style.overflow = 'hidden'; drawViewer();
 }
@@ -1694,14 +1711,24 @@ function drawViewer(){
   const img = $('#vImg'); img.setAttribute('style', 'width:100%;aspect-ratio:595.3/841.9;background-repeat:no-repeat;background-size:100% 300%;' + pageStyle(V.page));
   const m = REF.pm.map[String(V.page)]; const ld = $('#vLoad'); ld.hidden = false; ld.textContent = 'Abrindo página…';
   if (m){ const test = new Image(); test.onload = () => { ld.hidden = true; }; test.onerror = () => { ld.textContent = 'Página não disponível aqui (suba as imagens do catálogo em catalogo/referencia/).'; }; test.src = CONFIG.refImgBase + 's' + String(m[0]).padStart(3, '0') + '.webp'; }
-  $('#vItems').innerHTML = r ? r.i.map(t => '<button type="button" tabindex="-1"><b>' + esc(t[0]) + '</b>' + esc(t[1] || '(sem código)') + ' ×' + (t[2] == null ? '?' : t[2]) + '</button>').join('') : '';
+  const marcada = t => !!(V.marca && t[1] && chave(t[1]) === V.marca);
+  $('#vItems').innerHTML = r ? r.i.map(t => '<button type="button"' + (t[1] ? ' data-act="viewer-peca" data-cod="' + esc(t[1]) + '" title="Abrir a peça ' + esc(t[1]) + '"' : ' disabled') + (marcada(t) ? ' aria-pressed="true"' : '') + '><b>' + esc(t[0]) + '</b>' + esc(t[1] || '(sem código)') + ' ×' + (t[2] == null ? '?' : t[2]) + '</button>').join('') : '';
+  // foto de cada item na página: clique abre a peça; a peça de onde você veio fica destacada
+  let hl = $('#vHot'); if (!hl){ hl = document.createElement('div'); hl.id = 'vHot'; hl.className = 'v-hot'; $('#vPage').appendChild(hl); }
+  const PW = REF.pm.pageW || 595.276, PH = REF.pm.pageH || 841.89, cods = {};
+  if (r) r.i.forEach(t => { if (t[1]) (cods[t[0]] = cods[t[0]] || []).push(t); });
+  hl.innerHTML = r ? Object.entries(r.ph || {}).map(([it, b]) => { const ts = cods[it]; if (!ts || !b) return '';
+    return '<button type="button" class="hot' + (ts.some(marcada) ? ' on' : '') + '" data-act="viewer-peca" data-cod="' + esc(ts[0][1]) + '" title="' + esc(it + ' · ' + ts.map(t => t[1]).join(' / ') + ' · abrir a peça') + '" aria-label="Abrir a peça ' + esc(ts[0][1]) + '"'
+      + ' style="left:' + (b[0] / PW * 100).toFixed(2) + '%;top:' + (b[1] / PH * 100).toFixed(2) + '%;width:' + ((b[2] - b[0]) / PW * 100).toFixed(2) + '%;height:' + ((b[3] - b[1]) / PH * 100).toFixed(2) + '%"></button>'; }).join('') : '';
   const idx = V.pages.indexOf(V.page); $('#vPrev').disabled = idx <= 0; $('#vNext').disabled = idx < 0 || idx >= V.pages.length - 1;
   applyZoom();
 }
+/* páginas do catálogo onde a peça aparece (para a tela da peça) */
+function paginasDaPeca(cod){ const k = chave(cod); return k ? REF.kits.filter(r => r.p && REF.pm.map[String(r.p)] && r.i.some(t => t[1] && chave(t[1]) === k)).sort((a, b) => a.p - b.p) : []; }
 function applyZoom(){ const st = $('#vStage'); const w = st.clientWidth - 24, hFit = (st.clientHeight - 24) * 595.3 / 841.9; const fit = Math.max(280, window.innerWidth >= 900 ? Math.min(w, Math.max(hFit, 640)) : w); $('#vPage').style.width = Math.round(fit * V.zoom) + 'px'; }
 
 /* ================= ficha ampliada: conferir com zoom como vai sair no PDF (mesma montagem da impressão) ================= */
-const FZV = { z:1 };
+const FZV = { z:1, w:794, h:1123 };   // w/h: tamanho em 100% (ficha = A4; foto = pixels da imagem)
 const FZV_PASSOS = [.25, .33, .5, .67, .75, .9, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 const fzvAberta = () => { const v = $('#fzView'); return !!(v && v.classList.contains('open')); };
 function fzvEl(){
@@ -1710,7 +1737,7 @@ function fzvEl(){
   v = document.createElement('div'); v.className = 'viewer fzv'; v.id = 'fzView';
   v.setAttribute('role', 'dialog'); v.setAttribute('aria-modal', 'true'); v.setAttribute('aria-label', 'Ficha ampliada');
   v.innerHTML = '<div class="v-top"><button class="vbtn" data-act="fzv-close" type="button" aria-label="Fechar" title="Fechar (Esc)">' + IC.x + '</button>'
-    + '<div class="t"><b id="fzvTitle"></b><span>Como vai sair no PDF (no PDF o carimbo sai forte) · zoom: Ctrl + rodinha, pinça ou duplo clique · arraste para andar</span></div>'
+    + '<div class="t"><b id="fzvTitle"></b><span id="fzvSub"></span></div>'
     + '<div class="fzv-zoom">' + b('-', 'Diminuir', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>')
     + '<button class="fzv-pct" id="fzvPct" data-act="fzv-zoom" data-z="1" type="button" title="Tamanho real da folha A4">100%</button>'
     + b('+', 'Aumentar', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg>')
@@ -1722,8 +1749,8 @@ function fzvEl(){
 }
 function fzvSet(z){
   const pg = $('#fzvPage'), f = pg && pg.firstElementChild; if (!f) return;
-  FZV.z = z = clamp(z, .2, 4);
-  pg.style.width = Math.round(794 * z) + 'px'; pg.style.height = Math.round(1123 * z) + 'px'; f.style.transform = 'scale(' + z + ')';
+  FZV.z = z = clamp(z, .05, 4);
+  pg.style.width = Math.round(FZV.w * z) + 'px'; pg.style.height = Math.round(FZV.h * z) + 'px'; f.style.transform = 'scale(' + z + ')';
   $('#fzvPct').textContent = Math.round(z * 100) + '%';
 }
 function fzvZoom(z, cx, cy){   // o ponto embaixo do cursor (ou o centro) fica parado
@@ -1733,18 +1760,34 @@ function fzvZoom(z, cx, cy){   // o ponto embaixo do cursor (ou o centro) fica p
   fzvSet(z);
   st.scrollLeft = fx * FZV.z + pg.offsetLeft - ax; st.scrollTop = fy * FZV.z + pg.offsetTop - ay;
 }
-const fzvFit = modo => { const st = $('#fzvStage'), w = (st.clientWidth - 32) / 794, h = (st.clientHeight - 32) / 1123; return modo === 'largura' ? w : Math.min(w, h); };
+const fzvFit = modo => { const st = $('#fzvStage'), w = (st.clientWidth - 32) / FZV.w, h = (st.clientHeight - 32) / FZV.h; return modo === 'largura' ? w : Math.min(w, h); };
+const FZV_DICA = 'zoom: Ctrl + rodinha, pinça ou duplo clique · arraste para andar';
 function fzvPasso(d){ const z = FZV.z; fzvZoom(d > 0 ? (FZV_PASSOS.find(p => p > z + .01) || 4) : ([...FZV_PASSOS].reverse().find(p => p < z - .01) || .2)); }
 async function abrirFichaZoom(data){
   const v = fzvEl(), pg = $('#fzvPage', v), st = $('#fzvStage', v);
   $('#fzvTitle', v).textContent = (data.kit.cod_cliente || '') + ' · ' + ((STATUS[data.kit.status] || {}).l || '');
-  $('#fzvPdf', v).dataset.id = data.kit.id;
+  $('#fzvSub', v).textContent = 'Como vai sair no PDF (no PDF o carimbo sai forte) · ' + FZV_DICA;
+  $('#fzvPdf', v).hidden = false; $('#fzvPdf', v).dataset.id = data.kit.id; $('#fzvPct', v).title = 'Tamanho real da folha A4';
+  FZV.w = 794; FZV.h = 1123;
   pg.innerHTML = fichaHtml(data);   // igual ao PDF: sem botões de edição
   v.classList.add('open'); document.body.style.overflow = 'hidden';
   fzvSet(Math.max(fzvFit('pagina'), Math.min(1, fzvFit('largura'))));   // começa no tamanho real (A4) se couber na largura
   st.scrollTop = 0; st.scrollLeft = Math.max(0, (st.scrollWidth - st.clientWidth) / 2);
   await imgsLoaded(pg); if (!v.classList.contains('open')) return;
   fitFotos(pg); girarFotos(pg);
+}
+async function abrirImagemZoom(src, titulo){   // foto da peça (ou outra imagem) em tela cheia, com zoom
+  const v = fzvEl(), pg = $('#fzvPage', v), st = $('#fzvStage', v);
+  $('#fzvTitle', v).textContent = titulo || 'Foto'; $('#fzvSub', v).textContent = FZV_DICA;
+  $('#fzvPdf', v).hidden = true; $('#fzvPct', v).title = 'Tamanho original da imagem'; $('#fzvPct', v).textContent = '…';
+  pg.innerHTML = '<img class="fzv-img" alt="" draggable="false">'; pg.style.width = pg.style.height = '';
+  const im = pg.firstElementChild;
+  v.classList.add('open'); document.body.style.overflow = 'hidden';
+  await new Promise(r => { im.onload = r; im.onerror = r; im.src = src; });
+  if (!v.classList.contains('open') || pg.firstElementChild !== im) return;
+  if (!im.naturalWidth){ pg.innerHTML = '<div class="v-load">Não consegui abrir a foto.</div>'; return; }
+  FZV.w = im.naturalWidth; FZV.h = im.naturalHeight; im.style.width = FZV.w + 'px'; im.style.height = FZV.h + 'px';
+  fzvSet(fzvFit('pagina')); st.scrollTop = 0; st.scrollLeft = Math.max(0, (st.scrollWidth - st.clientWidth) / 2);
 }
 function fecharFichaZoom(){ const v = $('#fzView'); if (!v) return; v.classList.remove('open'); $('#fzvPage', v).innerHTML = ''; if (!S.stack.length) document.body.style.overflow = ''; }
 function ligarFzv(st){
@@ -2063,11 +2106,15 @@ SHEETS.peca = async t => {
   if (!t.data || t.reload){ const [d1, onde] = await Promise.all([DB.peca(t.id), DB.ondeUsa(t.id)]); t.data = d1; t.onde = onde; t.reload = false; }
   const p = t.data.peca, comps = t.data.comps, onde = t.onde || [], rs = refSub(p.codigo);
   const kvs = [['Prédio', p.predio], ['Família', p.familia], ['Fornecedor', p.fornecedor], ['Espessura', p.espessura], ['Material', p.material], ['Unidade', p.unidade], ['Obs.', p.obs]].filter(x => x[1]);
-  const html = '<div class="stack"><div class="phero"><div class="pic">' + (p.foto_path ? '<img src="' + esc(fotoUrl(p.foto_path)) + '" alt="">' : '<div class="none">' + IC.camera + '<br>Sem foto</div>')
+  const pgs = paginasDaPeca(p.codigo);
+  const html = '<div class="stack"><div class="phero"><div class="pic">' + (p.foto_path ? '<img src="' + esc(fotoUrl(p.foto_path)) + '" alt="" class="zoomavel" data-act="zoom-img" data-src="' + esc(fotoUrl(p.foto_path)) + '" data-tit="' + esc(p.codigo + (p.descricao ? ' · ' + p.descricao : '')) + '" title="Clique para ver maior">' : '<div class="none">' + IC.camera + '<br>Sem foto</div>')
     + (canEdit() ? '<button class="btn small" type="button" data-act="foto-peca" data-id="' + p.id + '">' + IC.camera + (p.foto_path ? ' Trocar foto' : ' Adicionar foto') + '</button>' : '') + '</div>'
     + '<div class="stack" style="gap:10px"><div class="code-xl">' + esc(p.codigo) + '</div><div class="row">' + (p.tipo === 'subkit' ? '<span class="pill t-violet">sub-kit</span>' : '<span class="pill">peça</span>') + '<span class="pill ' + (p.predio ? 't-info' : 't-crit') + '">' + esc(p.predio || 'sem prédio') + '</span>' + (p.ativo === false ? '<span class="pill t-crit">inativa</span>' : '') + '</div>'
     + '<div style="font-size:15px">' + esc(p.descricao || 'Sem descrição') + '</div>' + (kvs.length ? '<dl class="kv">' + kvs.map(([a, b]) => '<div><dt>' + a + '</dt><dd>' + esc(b) + '</dd></div>').join('') + '</dl>' : '')
     + (canEdit() ? '<div class="row"><button class="btn primary" type="button" data-act="edit-peca" data-id="' + p.id + '">' + IC.edit + ' Editar</button>' + (!onde.length && !comps.length ? '<button class="btn ghost danger" type="button" data-act="del-peca" data-id="' + p.id + '">' + IC.trash + ' Apagar</button>' : '') + '</div>' : '') + '</div></div>'
+    + (pgs.length ? '<div class="comp"><div class="comp-h"><h3>No catálogo Rev. 10</h3><span class="meta">' + pgs.length + (pgs.length > 1 ? ' páginas' : ' página') + ' · toque para ver a página inteira e abrir as outras peças</span></div><div class="pg-strip">'
+      + pgs.slice(0, 12).map(r => '<button type="button" class="pg-card" data-act="ref-page-peca" data-page="' + r.p + '" data-cod="' + esc(p.codigo) + '"><span class="page-thumb" data-bg="' + esc(pageStyle(r.p)) + '"></span><span class="pg-l"><b>' + esc(r.k) + '</b><small>p. ' + (r.pp || r.p) + '</small></span></button>').join('')
+      + (pgs.length > 12 ? '<span class="pg-mais">+' + (pgs.length - 12) + '<br><small>use ‹ › na página</small></span>' : '') + '</div></div>' : '')
     + (p.tipo === 'subkit' ? '<div class="comp"><div class="comp-h"><h3>Peças de dentro do sub-kit</h3><span class="meta">' + comps.length + ' tipos · ' + fmt(comps.reduce((a, c) => a + Number(c.qtde), 0)) + ' peças</span></div>'
       + (comps.length ? comps.map(c => '<div class="crow" data-act="open-peca" data-id="' + c.componente_id + '"><span class="callout">' + (c.peca && c.peca.foto_path ? '' : '·') + '</span><span class="c">' + esc(c.peca ? c.peca.codigo : '?') + '</span><span class="q">' + fmt(c.qtde) + '<small>un.</small></span><span class="a">' + esc((c.peca && c.peca.descricao) || '') + (c.peca && c.peca.predio ? ' · ' + esc(c.peca.predio) : '') + '</span></div>').join('')
         : '<div class="empty">Sem peças cadastradas: a calculadora usa este sub-kit fechado.' + (rs && canEdit() ? '<br><br><button class="btn small primary" type="button" data-act="edit-peca" data-id="' + p.id + '" data-fill="1">' + IC.wand + ' Preencher com a leitura do catálogo</button>' : '') + '</div>') + '</div>' : '')
@@ -2150,7 +2197,7 @@ SHEETS.config = async () => {
   const c = S.cfg;
   const html = '<div class="stack">' + (openMode() ? '<div class="notice">' + IC.warn + '<span><b>Acesso livre ligado:</b> qualquer pessoa com o link consulta e cadastra; o nome de cada aparelho vai para o histórico. Para ligar o login: crie os usuários no Supabase (Authentication → Users) e rode <span class="mono">update public.config set acesso_livre = false;</span></span></div>' : '')
     + (S.mode === 'supabase' && REF.fp ? '<section class="sec"><div class="sec-h"><h3>Imagens do catálogo Rev. 10</h3><span class="meta" id="imgStatus">conferindo…</span></div>'
-      + '<p class="muted" style="margin:0;font-size:13.5px">Fotos de ' + Object.keys(REF.fp).length + ' peças e ' + REF.kits.filter(k => k.lb).length + ' etiquetas recortadas do catálogo. Escolha o arquivo <span class="mono">imagens-catalogo-rev10.zip</span>: a página sobe tudo para o Storage (pasta referencia). Pode repetir: ela só troca.</p>'
+      + '<p class="muted" style="margin:0;font-size:13.5px">Fotos de ' + Object.keys(REF.fp).length + ' peças e ' + REF.kits.filter(k => k.lb).length + ' etiquetas recortadas do catálogo. Escolha o arquivo <span class="mono">imagens-catalogo-rev10.zip</span> (fotos e etiquetas) e depois o <span class="mono">paginas-catalogo-rev10.zip</span> (páginas inteiras, para \"Ver a página do catálogo\"): a página sobe tudo para o Storage (pasta referencia). Pode repetir: ela só troca.</p>'
       + '<div class="row"><button class="btn primary small" type="button" data-act="cfg-imgs">' + IC.upload + ' Subir imagens do catálogo (.zip)</button></div></section>' : '')
     + '<section class="sec"><div class="sec-h"><h3>Geral</h3></div><div class="fgrid">'
     + '<label class="lbl">Empresa (rodapé)<input class="field" id="cfgEmp" value="' + esc(c.empresa || '') + '"></label>'
@@ -2169,8 +2216,9 @@ SHEETS.config = async () => {
 async function statusImagens(){
   const el = $('#imgStatus'); if (!el) return;
   const foto = refFotoPath((Object.keys(REF.fp)[0] || '')), etq = refEtqPath(REF.kits.find(k => k.lb));
-  const [a, b] = await Promise.all([foto ? imgOk(fotoUrl(foto)) : false, etq ? imgOk(fotoUrl(etq)) : false]);
-  const e2 = $('#imgStatus'); if (e2) e2.innerHTML = a && b ? '<span class="tag ok">no Storage</span>' : '<span class="tag warn">' + (a || b ? 'faltam ' + (a ? 'as etiquetas' : 'as fotos') : 'ainda não subiram') + '</span>';
+  const [a, b, c] = await Promise.all([foto ? imgOk(fotoUrl(foto)) : false, etq ? imgOk(fotoUrl(etq)) : false, imgOk(CONFIG.refImgBase + 's000.webp')]);
+  const tag = (ok, nome) => '<span class="tag ' + (ok ? 'ok' : 'warn') + '">' + nome + (ok ? ' ok' : ': falta') + '</span>';
+  const e2 = $('#imgStatus'); if (e2) e2.innerHTML = tag(a, 'fotos') + ' ' + tag(b, 'etiquetas') + ' ' + tag(c, 'páginas');
 }
 SHEETS.prods = async () => {
   const ps = await DB.producoes();
@@ -2453,14 +2501,15 @@ async function subirImagensCatalogo(btn){
   if (typeof JSZip === 'undefined') await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
   btn.textContent = 'Abrindo o .zip…';
   const zip = await JSZip.loadAsync(file), fila = [];
-  zip.forEach((path, f) => { if (f.dir) return; const m = path.match(/(?:^|\/)(fotos|etiquetas)\/([^/]+\.webp)$/i); if (m) fila.push({ f, dest:'referencia/' + m[1].toLowerCase() + '/' + m[2] }); });
-  if (!fila.length) throw Object.assign(new Error('Esse .zip não tem as pastas fotos/ e etiquetas/ do catálogo.'), { friendly:true });
+  zip.forEach((path, f) => { if (f.dir) return; const m = path.match(/(?:^|\/)(fotos|etiquetas)\/([^/]+\.webp)$/i); if (m) return fila.push({ f, dest:'referencia/' + m[1].toLowerCase() + '/' + m[2] });
+    const pg = path.match(/(?:^|\/)(?:paginas|referencia)\/(s\d{3}\.webp)$/i) || path.match(/^(s\d{3}\.webp)$/i); if (pg) fila.push({ f, dest:'referencia/' + pg[1].toLowerCase() }); });   // páginas inteiras do catálogo
+  if (!fila.length) throw Object.assign(new Error('Esse .zip não tem as pastas fotos/, etiquetas/ ou paginas/ do catálogo.'), { friendly:true });
   const total = fila.length; let feitos = 0, falhas = 0;
   const vez = async () => { while (fila.length){ const it = fila.shift();
     try { const b = await it.f.async('uint8array'); await DB.uploadRaw(new Blob([b], { type:'image/webp' }), it.dest, 'image/webp'); } catch(e){ falhas++; }
     feitos++; btn.textContent = 'Enviando ' + feitos + ' de ' + total + '…'; } };
   await Promise.all(Array.from({ length:6 }, vez));
-  imgChecks.clear();
+  imgChecks.clear(); await probeRef();   // se subiram as páginas, a página passa a usar o Storage
   toast((total - falhas) + ' de ' + total + ' imagens no Storage' + (falhas ? '. ' + falhas + ' falharam: suba o .zip de novo (ele só troca).' : '. Pronto.'), null, 8000);
 }
 async function photoFor(prefix){
@@ -2499,6 +2548,13 @@ const ACT = {
   }),
   'ref-page': el => openViewer(Number(el.dataset.page)),
   'viewer-close': () => closeViewer(),
+  'zoom-img': el => abrirImagemZoom(el.dataset.src || el.src, el.dataset.tit || ''),
+  'ref-page-peca': el => openViewer(Number(el.dataset.page), { pages:paginasDaPeca(el.dataset.cod).map(r => r.p), marca:chave(el.dataset.cod) }),
+  'viewer-peca': el => {   // página do catálogo: abrir a peça clicada
+    const p = S.pecaByChave && S.pecaByChave.get(chave(el.dataset.cod));
+    if (!p) return toast('A peça ' + el.dataset.cod + ' ainda não está cadastrada.');
+    closeViewer(); const t = S.stack[S.stack.length - 1]; if (t && t.type === 'peca' && t.id === p.id) return;
+    pushSheet({ type:'peca', id:p.id }); },
   'fzv-open': () => { const t = S.stack[S.stack.length - 1]; if (t && t.type === 'kit' && t.data) abrirFichaZoom(t.data); },
   'fzv-close': () => fecharFichaZoom(),
   'fzv-zoom': el => { const z = el.dataset.z; if (z === '+' || z === '-') fzvPasso(z === '+' ? 1 : -1); else fzvZoom(z === 'pagina' || z === 'largura' ? fzvFit(z) : Number(z)); },
