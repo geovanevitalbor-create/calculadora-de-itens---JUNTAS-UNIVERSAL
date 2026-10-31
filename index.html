@@ -595,8 +595,9 @@ body.semsel,body.semsel *{user-select:none;-webkit-user-select:none}
 .fz-etq img{max-width:100%;max-height:300px;object-fit:contain;display:block}
 .etq-box{display:flex;flex-direction:column;gap:8px;padding:10px;border:1.5px dashed var(--line);border-radius:12px;background:var(--surface-2)}
 .etq-box img{max-width:min(100%,420px);max-height:220px;object-fit:contain;background:#fff;border-radius:6px;border:1px solid var(--line)}
-.fz-wm{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;overflow:hidden}
-.fz-wm span{transform:rotate(-30deg);font-size:110px;font-weight:900;color:rgba(200,30,40,.08);letter-spacing:6px;white-space:nowrap}
+.fz-wm{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;overflow:hidden;z-index:20;mix-blend-mode:multiply}   /* por cima das fotos; multiply: o preto continua legível */
+.fz-wm span{transform:rotate(-30deg);font-size:112px;font-weight:900;color:rgba(214,20,20,.9);letter-spacing:6px;white-space:nowrap;line-height:1.15;padding:0 26px;border:11px solid rgba(214,20,20,.9);border-radius:18px;-webkit-text-stroke:2px rgba(214,20,20,.9)}
+.ficha.editando .fz-wm{opacity:.25}   /* arrumando as fotos: o carimbo fica fraco para não atrapalhar */
 .ficha-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .kd2{display:grid;gap:16px}
 @media (min-width:1100px){ .kd2{grid-template-columns:minmax(0,1fr) 300px;align-items:start} .kd2-side{position:sticky;top:0} }
@@ -1605,7 +1606,9 @@ function fichaHtml(data, opt){
   const lj = logoEmpresa(), lc = logoCliente(cli);
   const logoJu = lj ? '<img src="' + esc(lj) + '" alt="Universal Juntas">' : '<span class="fz-ju"><b>Universal</b><span>JUNTAS</span></span>';
   const logoCli = lc ? '<img src="' + esc(lc) + '" alt="' + esc(cli.nome || '') + '">' : (cli.nome ? '<span class="nm">' + esc(cli.nome) + '</span>' : '');
-  const wm = k.status && k.status !== 'aprovado' ? '<div class="fz-wm"><span>' + esc((STATUS[k.status] || {}).l || '').toUpperCase() + '</span></div>' : '';
+  // ficha não aprovada (rascunho, em revisão, inativo): carimbo vermelho por cima de tudo, fotos inclusive, na tela e no PDF
+  const stl = k.status && k.status !== 'aprovado' ? ((STATUS[k.status] || {}).l || '').toUpperCase() : '';
+  const wm = stl ? '<div class="fz-wm"><span style="font-size:' + (stl.length > 8 ? 100 : 112) + 'px">' + esc(stl) + '</span></div>' : '';
   return '<div class="ficha' + (opt.editLayout ? ' editando' : '') + '" data-kit="' + (k.id || '') + '">' + wm + '<div class="fz">'
     + '<div class="fz-top"><div class="fz-logo">' + logoJu + '</div><div class="fz-title"><span class="tt">' + esc(cli.titulo_ficha || 'COMPOSIÇÃO DE JOGOS') + '</span><div class="big">' + esc(k.cod_cliente || '') + '</div></div><div class="fz-cli">' + logoCli + '</div></div>'
     + '<div class="fz-info"><div class="l"><div class="h">' + esc(cli.rotulo_codigo || 'Cód. Cliente') + '</div><div class="v">' + esc(k.cod_cliente || '') + '</div><div class="h">Cód. Universal</div><div class="v">' + esc(k.cod_universal || '') + '</div></div>'
