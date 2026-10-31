@@ -565,6 +565,17 @@ body.semsel,body.semsel *{user-select:none;-webkit-user-select:none}
 .ficha.editando .fz-ph.copia-ativa > .rs,.ficha.editando .fz-ph.copia-ativa > .rt{display:none}
 .ficha.editando .rg{position:absolute;left:2px;top:1px;width:18px;height:18px;border-radius:5px;background:#fff;border:1.5px solid #22a559;color:#1d6d35;display:grid;place-items:center;font-size:12px;line-height:1;cursor:pointer;z-index:5}
 #printArea .ficha.editando .rg{display:none}
+/* ficha ampliada (conferir o PDF com zoom) */
+.ficha-wrap.zoomavel{cursor:zoom-in}
+.fzv .fzv-zoom{display:flex;gap:6px;align-items:center}
+.fzv-pct{min-width:60px;height:40px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#EEF3F0;font-weight:700;font-size:13px;font-variant-numeric:tabular-nums;cursor:pointer}
+.fzv-pct:hover{background:rgba(255,255,255,.14)}
+.fzv-stage{cursor:grab}
+.fzv-stage.pan{cursor:grabbing;user-select:none;-webkit-user-select:none}
+.fzv-page{position:relative;margin:16px auto;background:#fff;box-shadow:0 10px 40px rgba(0,0,0,.5);overflow:hidden}
+.fzv-page .ficha{pointer-events:none}
+.fzv-page .fz-ph.empty{visibility:hidden}
+@media (max-width:639px){ .fzv .v-top .t span{display:none} .fzv .fzv-zoom .vbtn[data-z="largura"]{display:none} }
 /* baixar catálogo */
 .chkrow{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer}
 .chkrow input{width:20px;height:20px;accent-color:var(--brand,#22a559);flex:none}
@@ -1688,6 +1699,72 @@ function drawViewer(){
 }
 function applyZoom(){ const st = $('#vStage'); const w = st.clientWidth - 24, hFit = (st.clientHeight - 24) * 595.3 / 841.9; const fit = Math.max(280, window.innerWidth >= 900 ? Math.min(w, Math.max(hFit, 640)) : w); $('#vPage').style.width = Math.round(fit * V.zoom) + 'px'; }
 
+/* ================= ficha ampliada: conferir com zoom como vai sair no PDF (mesma montagem da impressão) ================= */
+const FZV = { z:1 };
+const FZV_PASSOS = [.25, .33, .5, .67, .75, .9, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
+const fzvAberta = () => { const v = $('#fzView'); return !!(v && v.classList.contains('open')); };
+function fzvEl(){
+  let v = $('#fzView'); if (v) return v;
+  const b = (z, rot, svg) => '<button class="vbtn" data-act="fzv-zoom" data-z="' + z + '" type="button" aria-label="' + rot + '" title="' + rot + '">' + svg + '</button>';
+  v = document.createElement('div'); v.className = 'viewer fzv'; v.id = 'fzView';
+  v.setAttribute('role', 'dialog'); v.setAttribute('aria-modal', 'true'); v.setAttribute('aria-label', 'Ficha ampliada');
+  v.innerHTML = '<div class="v-top"><button class="vbtn" data-act="fzv-close" type="button" aria-label="Fechar" title="Fechar (Esc)">' + IC.x + '</button>'
+    + '<div class="t"><b id="fzvTitle"></b><span>Como vai sair no PDF · zoom: Ctrl + rodinha, pinça ou duplo clique · arraste para andar</span></div>'
+    + '<div class="fzv-zoom">' + b('-', 'Diminuir', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>')
+    + '<button class="fzv-pct" id="fzvPct" data-act="fzv-zoom" data-z="1" type="button" title="Tamanho real da folha A4">100%</button>'
+    + b('+', 'Aumentar', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg>')
+    + b('pagina', 'Página inteira', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>')
+    + b('largura', 'Largura da tela', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>') + '</div>'
+    + '<button class="vbtn" data-act="print-kit" id="fzvPdf" type="button" aria-label="Gerar o PDF" title="Gerar o PDF">' + IC.print + '</button></div>'
+    + '<div class="v-stage fzv-stage" id="fzvStage"><div class="fzv-page" id="fzvPage"></div></div>';
+  document.body.appendChild(v); ligarFzv($('#fzvStage', v)); return v;
+}
+function fzvSet(z){
+  const pg = $('#fzvPage'), f = pg && pg.firstElementChild; if (!f) return;
+  FZV.z = z = clamp(z, .2, 4);
+  pg.style.width = Math.round(794 * z) + 'px'; pg.style.height = Math.round(1123 * z) + 'px'; f.style.transform = 'scale(' + z + ')';
+  $('#fzvPct').textContent = Math.round(z * 100) + '%';
+}
+function fzvZoom(z, cx, cy){   // o ponto embaixo do cursor (ou o centro) fica parado
+  const st = $('#fzvStage'), pg = $('#fzvPage'); if (!st || !pg.firstElementChild) return;
+  const rs = st.getBoundingClientRect(), ax = cx == null ? st.clientWidth / 2 : cx - rs.left, ay = cy == null ? st.clientHeight / 2 : cy - rs.top;
+  const fx = (st.scrollLeft + ax - pg.offsetLeft) / FZV.z, fy = (st.scrollTop + ay - pg.offsetTop) / FZV.z;
+  fzvSet(z);
+  st.scrollLeft = fx * FZV.z + pg.offsetLeft - ax; st.scrollTop = fy * FZV.z + pg.offsetTop - ay;
+}
+const fzvFit = modo => { const st = $('#fzvStage'), w = (st.clientWidth - 32) / 794, h = (st.clientHeight - 32) / 1123; return modo === 'largura' ? w : Math.min(w, h); };
+function fzvPasso(d){ const z = FZV.z; fzvZoom(d > 0 ? (FZV_PASSOS.find(p => p > z + .01) || 4) : ([...FZV_PASSOS].reverse().find(p => p < z - .01) || .2)); }
+async function abrirFichaZoom(data){
+  const v = fzvEl(), pg = $('#fzvPage', v), st = $('#fzvStage', v);
+  $('#fzvTitle', v).textContent = (data.kit.cod_cliente || '') + ' · ' + ((STATUS[data.kit.status] || {}).l || '');
+  $('#fzvPdf', v).dataset.id = data.kit.id;
+  pg.innerHTML = fichaHtml(data);   // igual ao PDF: sem botões de edição
+  v.classList.add('open'); document.body.style.overflow = 'hidden';
+  fzvSet(Math.max(fzvFit('pagina'), Math.min(1, fzvFit('largura'))));   // começa no tamanho real (A4) se couber na largura
+  st.scrollTop = 0; st.scrollLeft = Math.max(0, (st.scrollWidth - st.clientWidth) / 2);
+  await imgsLoaded(pg); if (!v.classList.contains('open')) return;
+  fitFotos(pg); girarFotos(pg);
+}
+function fecharFichaZoom(){ const v = $('#fzView'); if (!v) return; v.classList.remove('open'); $('#fzvPage', v).innerHTML = ''; if (!S.stack.length) document.body.style.overflow = ''; }
+function ligarFzv(st){
+  let pan = null, pz = null;
+  st.addEventListener('pointerdown', e => {   // mouse: arrastar para andar pela folha (no dedo a rolagem é a normal)
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    pan = { x:e.clientX, y:e.clientY, l:st.scrollLeft, t:st.scrollTop }; st.classList.add('pan');
+    try { st.setPointerCapture(e.pointerId); } catch(err){}
+  });
+  st.addEventListener('pointermove', e => { if (!pan) return; st.scrollLeft = pan.l - (e.clientX - pan.x); st.scrollTop = pan.t - (e.clientY - pan.y); });
+  const fim = () => { pan = null; st.classList.remove('pan'); };
+  st.addEventListener('pointerup', fim); st.addEventListener('pointercancel', fim); st.addEventListener('lostpointercapture', fim);
+  st.addEventListener('dblclick', e => { e.preventDefault(); fzvZoom(FZV.z < 1.4 ? 2 : fzvFit('pagina'), e.clientX, e.clientY); });
+  st.addEventListener('wheel', e => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); fzvZoom(FZV.z * Math.exp(-e.deltaY * .0025), e.clientX, e.clientY); }, { passive:false });   // inclui a pinça do touchpad
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  st.addEventListener('touchstart', e => { if (e.touches.length === 2) pz = { d:dist(e.touches), z:FZV.z }; }, { passive:true });
+  st.addEventListener('touchmove', e => { if (!pz || e.touches.length !== 2) return; e.preventDefault();
+    fzvZoom(pz.z * dist(e.touches) / pz.d, (e.touches[0].clientX + e.touches[1].clientX) / 2, (e.touches[0].clientY + e.touches[1].clientY) / 2); }, { passive:false });
+  st.addEventListener('touchend', e => { if (e.touches.length < 2) pz = null; });
+}
+
 /* ================= painel (pilha de telas) ================= */
 let sheetToken = 0;
 function pushSheet(item){ S.stack.push(item); renderSheet(); }
@@ -1740,6 +1817,7 @@ SHEETS.kit = async t => {
   if (canEdit() && (data.fotos.length || data.itens.some(i => i.peca))) acts.push('<button class="btn" type="button" data-act="open-fotolayout" data-id="' + k.id + '">' + IC.camera + ' Ajustar fotos</button>');
   if (semFoto) acts.push('<button class="btn" type="button" data-act="kit-fotos-ref" data-id="' + k.id + '">' + IC.wand + ' Fotos do catálogo (' + semFoto + ')</button>');
   if (canEdit() && k.status !== 'aprovado') acts.push('<button class="btn" type="button" data-act="kit-status" data-id="' + k.id + '" data-st="aprovado">' + IC.check + ' Aprovar</button>');
+  acts.push('<button class="btn" type="button" data-act="fzv-open">' + IC.search + ' Ampliar</button>');
   acts.push('<button class="btn" type="button" data-act="print-kit" data-id="' + k.id + '">' + IC.print + ' PDF</button>');
   acts.push('<button class="btn" type="button" data-act="calc-one" data-id="' + k.id + '">' + IC.calc + ' Calcular</button>');
   if (canEdit()) acts.push('<button class="btn" type="button" data-act="dup-kit" data-id="' + k.id + '">' + IC.copy + ' Duplicar</button>');
@@ -1756,7 +1834,7 @@ SHEETS.kit = async t => {
     + '<div class="sec"><div class="sec-h"><h3>Peças abertas</h3><button class="btn small" type="button" data-act="kit-explode" data-id="' + k.id + '">Abrir sub-kits</button></div><div id="kitExplode" class="muted" style="font-size:13px">Mostra todas as peças de 1 jogo, com os sub-kits já separados e as iguais somadas.</div></div>'
     + '<div class="sec"><div class="sec-h"><h3>Histórico</h3><button class="btn small" type="button" data-act="load-hist" data-kit="' + k.id + '">' + IC.hist + ' Ver</button></div><div id="histBox"></div></div>';
   return { title:crumb(k.cod_cliente, (cli.nome || '') + ' · ' + (STATUS[k.status] || {}).l), titleText:k.cod_cliente,
-    html:'<div class="stack"><div class="ficha-actions">' + acts.join('') + '</div><div class="kd2"><div class="ficha-wrap">' + fichaHtml(data, { edit:true }) + '</div><div class="kd2-side">' + side + '</div></div></div>' };
+    html:'<div class="stack"><div class="ficha-actions">' + acts.join('') + '</div><div class="kd2"><div class="ficha-wrap zoomavel" data-act="fzv-open" title="Clique para ampliar e conferir o PDF">' + fichaHtml(data, { edit:true }) + '</div><div class="kd2-side">' + side + '</div></div></div>' };
 };
 
 /* ---------- ficha (cadastrar / editar) ---------- */
@@ -2420,6 +2498,9 @@ const ACT = {
   }),
   'ref-page': el => openViewer(Number(el.dataset.page)),
   'viewer-close': () => closeViewer(),
+  'fzv-open': () => { const t = S.stack[S.stack.length - 1]; if (t && t.type === 'kit' && t.data) abrirFichaZoom(t.data); },
+  'fzv-close': () => fecharFichaZoom(),
+  'fzv-zoom': el => { const z = el.dataset.z; if (z === '+' || z === '-') fzvPasso(z === '+' ? 1 : -1); else fzvZoom(z === 'pagina' || z === 'largura' ? fzvFit(z) : Number(z)); },
   'viewer-zoom': el => { const z = Number(el.dataset.z); V.zoom = z === 0 ? 1 : Math.min(4, Math.max(1, +(V.zoom + z * 0.5).toFixed(2))); applyZoom(); },
   'viewer-step': el => { const i = V.pages.indexOf(V.page) + Number(el.dataset.d); if (i >= 0 && i < V.pages.length){ V.page = V.pages[i]; $('#vStage').scrollTo(0, 0); drawViewer(); } },
   'kits-f': el => { S.kitsF[el.dataset.g] = el.dataset.val; S.kitsF.shown = 60; renderView(); },
@@ -2584,6 +2665,12 @@ async function colarImagem(top, file){
 }
 document.addEventListener('selectstart', e => { if (document.body.classList.contains('arrastando')) e.preventDefault(); });   // arrastando foto: não seleciona texto
 document.addEventListener('keydown', e => {
+  if (fzvAberta()){   // ficha ampliada: Esc fecha, + e - mudam o zoom, 0 = página inteira, 1 = tamanho real
+    if (e.key === 'Escape') return fecharFichaZoom();
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const z = { '+':'+', '=':'+', '-':'-', '0':'pagina', '1':'1' }[e.key]; if (!z) return; e.preventDefault();
+    if (z === '+' || z === '-') fzvPasso(z === '+' ? 1 : -1); else fzvZoom(z === 'pagina' ? fzvFit('pagina') : 1); return;
+  }
   if (e.key === 'Escape'){ if ($('#viewer').classList.contains('open')) return closeViewer(); if (S.stack.length) return popSheet(); }
   if (e.target.id === 'calcQ' && e.key === 'Enter'){ e.preventDefault(); ACT['calc-add'](); }
   if (e.target.id === 'dupCod' && e.key === 'Enter'){ e.preventDefault(); const b = $('[data-act="dup-do"]'); if (b) b.click(); }
