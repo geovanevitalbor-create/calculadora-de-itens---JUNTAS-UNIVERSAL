@@ -606,9 +606,9 @@ body.semsel,body.semsel *{user-select:none;-webkit-user-select:none}
 .fz-etq img{max-width:100%;max-height:300px;object-fit:contain;display:block}
 .etq-box{display:flex;flex-direction:column;gap:8px;padding:10px;border:1.5px dashed var(--line);border-radius:12px;background:var(--surface-2)}
 .etq-box img{max-width:min(100%,420px);max-height:220px;object-fit:contain;background:#fff;border-radius:6px;border:1px solid var(--line)}
-.fz-wm{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;overflow:hidden;z-index:20;mix-blend-mode:multiply}   /* por cima das fotos; multiply: o preto continua legível */
+.fz-wm{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;overflow:hidden;z-index:20;mix-blend-mode:multiply;opacity:.35}   /* na tela fica fraco para conferir; no PDF sai forte (@media print) */   /* por cima das fotos; multiply: o preto continua legível */
 .fz-wm span{transform:rotate(-30deg);font-size:112px;font-weight:900;color:rgba(214,20,20,.9);letter-spacing:6px;white-space:nowrap;line-height:1.15;padding:0 26px;border:11px solid rgba(214,20,20,.9);border-radius:18px;-webkit-text-stroke:2px rgba(214,20,20,.9)}
-.ficha.editando .fz-wm{opacity:.25}   /* arrumando as fotos: o carimbo fica fraco para não atrapalhar */
+.ficha.editando .fz-wm{opacity:.2}   /* arrumando as fotos: o carimbo fica fraco para não atrapalhar */
 .ficha-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .kd2{display:grid;gap:16px}
 @media (min-width:1100px){ .kd2{grid-template-columns:minmax(0,1fr) 300px;align-items:start} .kd2-side{position:sticky;top:0} }
@@ -642,6 +642,7 @@ body.semsel,body.semsel *{user-select:none;-webkit-user-select:none}
   #printArea .ficha{transform:none!important;page-break-after:always;break-after:page}
   #printArea .ficha:last-child{page-break-after:auto;break-after:auto}
   #printArea .fz-ph.empty{visibility:hidden}
+  #printArea .fz-wm{opacity:1!important}   /* carimbo forte só no PDF / papel */
   #printArea .plist-print{padding:12mm;font-family:Arial,Helvetica,sans-serif;color:#111}
   #printArea .plist-print table{width:100%;border-collapse:collapse;font-size:10.5pt}
   #printArea .plist-print th,#printArea .plist-print td{border:1px solid #999;padding:3px 6px;text-align:left}
@@ -1709,7 +1710,7 @@ function fzvEl(){
   v = document.createElement('div'); v.className = 'viewer fzv'; v.id = 'fzView';
   v.setAttribute('role', 'dialog'); v.setAttribute('aria-modal', 'true'); v.setAttribute('aria-label', 'Ficha ampliada');
   v.innerHTML = '<div class="v-top"><button class="vbtn" data-act="fzv-close" type="button" aria-label="Fechar" title="Fechar (Esc)">' + IC.x + '</button>'
-    + '<div class="t"><b id="fzvTitle"></b><span>Como vai sair no PDF · zoom: Ctrl + rodinha, pinça ou duplo clique · arraste para andar</span></div>'
+    + '<div class="t"><b id="fzvTitle"></b><span>Como vai sair no PDF (no PDF o carimbo sai forte) · zoom: Ctrl + rodinha, pinça ou duplo clique · arraste para andar</span></div>'
     + '<div class="fzv-zoom">' + b('-', 'Diminuir', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>')
     + '<button class="fzv-pct" id="fzvPct" data-act="fzv-zoom" data-z="1" type="button" title="Tamanho real da folha A4">100%</button>'
     + b('+', 'Aumentar', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg>')
