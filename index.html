@@ -681,6 +681,15 @@ body.semsel,body.semsel *{user-select:none;-webkit-user-select:none}
 @keyframes pbind{from{transform:translateX(-110%)}to{transform:translateX(310%)}}
 @keyframes pbin{from{opacity:0}}
 @media (prefers-reduced-motion:reduce){ .progbox.indef .progress i{animation:none;width:100%;opacity:.5} }
+/* tela da peça: miniaturas das fichas que usam a peça; a peça fica marcada em amarelo (tela; o PDF não muda) */
+.fk-card{width:118px}
+.fk-card .ficha-wrap{display:block;aspect-ratio:794/1123;background:#fff;border-radius:4px;box-shadow:0 0 0 1px var(--line)}
+.fk-card .ficha{pointer-events:none}
+.ficha .fz-tab tbody tr.fk-on td{background:#ffe066!important}
+.ficha .fz-photos:not(.livre) .fz-ph.fk-on{position:relative}
+.ficha .fz-ph.fk-on::after{content:'';position:absolute;inset:0;border:4px solid #f59e0b;border-radius:4px;box-shadow:inset 0 0 0 9999px rgba(255,214,0,.16);pointer-events:none;z-index:6}
+.fk-thumb .ficha .fz-ph.fk-on::after{border-width:18px}
+@media (max-width:639px){ .fzv.fk-nav .fzv-zoom .vbtn[data-z="-"], .fzv.fk-nav .fzv-zoom .vbtn[data-z="+"]{display:none} }   /* celular: zoom pela pinça, sobra lugar para ‹ › */
 </style>
 </head>
 <body>
@@ -1815,6 +1824,77 @@ function drawViewer(){
 }
 /* páginas do catálogo onde a peça aparece (para a tela da peça) */
 function paginasDaPeca(cod){ const k = chave(cod); return k ? REF.kits.filter(r => r.p && REF.pm.map[String(r.p)] && r.i.some(t => t[1] && chave(t[1]) === k)).sort((a, b) => a.p - b.p) : []; }
+/* tela da peça: as fichas do banco que usam a peça (no lugar das páginas do catálogo Sabó) */
+function fichasDaPeca(onde){
+  const m = new Map();
+  (onde || []).forEach(o => { if (!o.kit_id) return; let f = m.get(o.kit_id);
+    if (!f){ f = { id:o.kit_id, cod:String(o.cod_cliente || ''), itens:new Set() }; m.set(o.kit_id, f); }
+    if (o.item != null && o.item !== '') f.itens.add(String(o.item)); });
+  const pag = f => { const k = S.kitById.get(f.id), n = parseInt(k && k.pagina, 10); return isNaN(n) ? 1e9 : n; };
+  return [...m.values()].sort((a, b) => pag(a) - pag(b) || a.cod.localeCompare(b.cod, 'pt-BR', { numeric:true }));
+}
+function itensDaPeca(d, pid, extra){   // itens da ficha com a peça (direto ou dentro de um sub-kit)
+  const on = new Set(extra || []);
+  d.itens.forEach(i => { if (i.peca && i.peca.id === pid) on.add(String(i.item)); });
+  return on;
+}
+function marcarPeca(root, d, on){   // a peça fica em amarelo: linha da tabela e foto
+  const rows = $$('.fz-tab tbody tr', root);
+  d.itens.forEach((i, n) => { if (on.has(String(i.item)) && rows[n]) rows[n].classList.add('fk-on'); });
+  const keys = new Set(on);
+  (d.fotos || []).forEach((f, n) => { if ((f.itens || []).some(x => on.has(String(x)))) keys.add('f' + (f.id || 'n' + n)); });
+  $$('.fz-ph[data-key]', root).forEach(el => { if (keys.has(el.dataset.key)) el.classList.add('fk-on'); });
+}
+async function miniFichas(body, t){
+  const cards = $$('.fk-card', body); if (!cards.length) return;
+  const falta = cards.map(c => Number(c.dataset.kit)).filter(id => !t.fichas.has(id));
+  if (falta.length){
+    try { const ds = DB.kitsFull ? await DB.kitsFull(falta) : await Promise.all(falta.map(id => DB.kit(id))); ds.forEach(d => { if (d && d.kit) t.fichas.set(d.kit.id, d); }); }
+    catch(e){ return; }
+  }
+  const feitas = [];
+  cards.forEach(c => {
+    const d = t.fichas.get(Number(c.dataset.kit)), w = $('.fk-thumb', c); if (!c.isConnected || !d || !w) return;
+    const f = (t.fks || []).find(x => x.id === d.kit.id);
+    w.innerHTML = fichaHtml(d); marcarPeca(w, d, itensDaPeca(d, t.id, f && f.itens)); feitas.push(w);
+    const sm = $('.pg-l small', c); if (sm && d.kit.pagina) sm.textContent = 'p. ' + d.kit.pagina;
+  });
+  if (!feitas.length) return;
+  fitFichas(body);
+  await Promise.all(feitas.map(w => imgsLoaded(w)));
+  feitas.forEach(w => { if (w.isConnected){ fitFotos(w); girarFotos(w); } });
+}
+const FZV_NAV_BTNS = '<button class="vbtn" data-act="fzv-nav" data-d="-1" id="fzvPrev" type="button" aria-label="Ficha anterior" title="Ficha anterior (←)" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>'
+  + '<button class="vbtn" data-act="fzv-nav" data-d="1" id="fzvNext" type="button" aria-label="Próxima ficha" title="Próxima ficha (→)" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>';
+function fzvNavUi(){
+  const v = $('#fzView'); if (!v) return;
+  const N = FZV.nav, a = $('#fzvPrev', v), b = $('#fzvNext', v), bt = $('#fzvBottom', v);
+  if (a && b){ a.hidden = b.hidden = !N || N.lista.length < 2; if (N){ a.disabled = N.i <= 0; b.disabled = N.i >= N.lista.length - 1; } }
+  if (bt) bt.hidden = !N;
+  v.classList.toggle('fk-nav', !!N);
+}
+async function abrirFichaPeca(i){   // ficha de um kit com a peça marcada; ‹ › andam pelas fichas da peça
+  const N = FZV.nav; if (!N || !N.lista.length) return;
+  i = clamp(i, 0, N.lista.length - 1);
+  const id = N.lista[i], tok = N.tok = (N.tok || 0) + 1;
+  let d = N.cache.get(id);
+  if (!d){
+    const v = fzvEl(); $('#fzvSub', v).textContent = 'Abrindo a ficha…';
+    if (!v.classList.contains('open')){ $('#fzvTitle', v).textContent = N.cods.get(id) || ''; $('#fzvPage', v).innerHTML = ''; v.classList.add('open'); document.body.style.overflow = 'hidden'; }
+    try { d = await DB.kit(id); N.cache.set(id, d); }
+    catch(e){ if (FZV.nav === N) toast(errMsg(e)); return; }
+    if (FZV.nav !== N || N.tok !== tok) return;
+  }
+  N.i = i;
+  const v = fzvEl(), on = itensDaPeca(d, N.pid, N.itens.get(id));
+  $('#fzvItems', v).innerHTML = d.itens.map(it => '<button type="button"' + (it.peca ? ' data-act="fzv-item" data-id="' + it.peca.id + '" title="Abrir a peça ' + esc(it.peca.codigo) + '"' : ' disabled') + (on.has(String(it.item)) ? ' aria-pressed="true"' : '') + '><b>' + esc(it.item) + '</b>' + esc(it.peca ? it.peca.codigo : (it.cod_item_cliente || '(sem código)')) + ' ×' + (it.qtde == null ? '?' : fmt(it.qtde)) + '</button>').join('');
+  const pronta = abrirFichaZoom(d);   // a parte síncrona já monta a ficha
+  marcarPeca($('#fzvPage', v), d, on);
+  $('#fzvSub', v).textContent = (N.lista.length > 1 ? (i + 1) + ' de ' + N.lista.length + ' · ' : '') + (d.kit.descricao || '');
+  const nx = N.lista[i + 1]; if (nx && !N.cache.has(nx)) DB.kit(nx).then(x => { N.cache.set(nx, x); }).catch(() => {});
+  await pronta;
+}
+function fzvAndar(d){ const N = FZV.nav; if (!N) return; const j = N.i + d; if (j >= 0 && j < N.lista.length) abrirFichaPeca(j); }
 function applyZoom(){ const st = $('#vStage'); const w = st.clientWidth - 24, hFit = (st.clientHeight - 24) * 595.3 / 841.9; const fit = Math.max(280, window.innerWidth >= 900 ? Math.min(w, Math.max(hFit, 640)) : w); $('#vPage').style.width = Math.round(fit * V.zoom) + 'px'; }
 
 /* ================= ficha ampliada: conferir com zoom como vai sair no PDF (mesma montagem da impressão) ================= */
@@ -1833,8 +1913,8 @@ function fzvEl(){
     + b('+', 'Aumentar', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg>')
     + b('pagina', 'Página inteira', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>')
     + b('largura', 'Largura da tela', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>') + '</div>'
-    + '<button class="vbtn" data-act="print-kit" id="fzvPdf" type="button" aria-label="Gerar o PDF" title="Gerar o PDF">' + IC.print + '</button></div>'
-    + '<div class="v-stage fzv-stage" id="fzvStage"><div class="fzv-page" id="fzvPage"></div></div>';
+    + '<button class="vbtn" data-act="print-kit" id="fzvPdf" type="button" aria-label="Gerar o PDF" title="Gerar o PDF">' + IC.print + '</button>' + FZV_NAV_BTNS + '</div>'
+    + '<div class="v-stage fzv-stage" id="fzvStage"><div class="fzv-page" id="fzvPage"></div></div><div class="v-bottom" id="fzvBottom" hidden><div class="v-items" id="fzvItems"></div></div>';
   document.body.appendChild(v); ligarFzv($('#fzvStage', v)); return v;
 }
 function fzvSet(z){
@@ -1855,6 +1935,7 @@ const FZV_DICA = 'zoom: Ctrl + rodinha, pinça ou duplo clique · arraste para a
 function fzvPasso(d){ const z = FZV.z; fzvZoom(d > 0 ? (FZV_PASSOS.find(p => p > z + .01) || 4) : ([...FZV_PASSOS].reverse().find(p => p < z - .01) || .2)); }
 async function abrirFichaZoom(data){
   const v = fzvEl(), pg = $('#fzvPage', v), st = $('#fzvStage', v);
+  fzvNavUi();
   $('#fzvTitle', v).textContent = (data.kit.cod_cliente || '') + ' · ' + ((STATUS[data.kit.status] || {}).l || '');
   $('#fzvSub', v).textContent = 'Como vai sair no PDF (no PDF o carimbo sai forte) · ' + FZV_DICA;
   $('#fzvPdf', v).hidden = false; $('#fzvPdf', v).dataset.id = data.kit.id; $('#fzvPct', v).title = 'Tamanho real da folha A4';
@@ -1868,6 +1949,7 @@ async function abrirFichaZoom(data){
 }
 async function abrirImagemZoom(src, titulo){   // foto da peça (ou outra imagem) em tela cheia, com zoom
   const v = fzvEl(), pg = $('#fzvPage', v), st = $('#fzvStage', v);
+  FZV.nav = null; fzvNavUi();
   $('#fzvTitle', v).textContent = titulo || 'Foto'; $('#fzvSub', v).textContent = FZV_DICA;
   $('#fzvPdf', v).hidden = true; $('#fzvPct', v).title = 'Tamanho original da imagem'; $('#fzvPct', v).textContent = '…';
   pg.innerHTML = '<img class="fzv-img" alt="" draggable="false">'; pg.style.width = pg.style.height = '';
@@ -1879,7 +1961,7 @@ async function abrirImagemZoom(src, titulo){   // foto da peça (ou outra imagem
   FZV.w = im.naturalWidth; FZV.h = im.naturalHeight; im.style.width = FZV.w + 'px'; im.style.height = FZV.h + 'px';
   fzvSet(fzvFit('pagina')); st.scrollTop = 0; st.scrollLeft = Math.max(0, (st.scrollWidth - st.clientWidth) / 2);
 }
-function fecharFichaZoom(){ const v = $('#fzView'); if (!v) return; v.classList.remove('open'); $('#fzvPage', v).innerHTML = ''; if (!S.stack.length) document.body.style.overflow = ''; }
+function fecharFichaZoom(){ FZV.nav = null; const v = $('#fzView'); if (!v) return; v.classList.remove('open'); $('#fzvPage', v).innerHTML = ''; if (!S.stack.length) document.body.style.overflow = ''; }
 function ligarFzv(st){
   let pan = null, pz = null;
   st.addEventListener('pointerdown', e => {   // mouse: arrastar para andar pela folha (no dedo a rolagem é a normal)
@@ -2193,25 +2275,25 @@ async function edSave(){
 
 /* ---------- peça ---------- */
 SHEETS.peca = async t => {
-  if (!t.data || t.reload){ const [d1, onde] = await Promise.all([DB.peca(t.id), DB.ondeUsa(t.id)]); t.data = d1; t.onde = onde; t.reload = false; }
+  if (!t.data || t.reload){ const [d1, onde] = await Promise.all([DB.peca(t.id), DB.ondeUsa(t.id)]); t.data = d1; t.onde = onde; t.reload = false; t.fichas = new Map(); }
   const p = t.data.peca, comps = t.data.comps, onde = t.onde || [], rs = refSub(p.codigo);
   const kvs = [['Prédio', p.predio], ['Família', p.familia], ['Fornecedor', p.fornecedor], ['Espessura', p.espessura], ['Material', p.material], ['Unidade', p.unidade], ['Obs.', p.obs]].filter(x => x[1]);
-  const pgs = paginasDaPeca(p.codigo);
+  const fks = t.fks = fichasDaPeca(onde); if (!t.fichas) t.fichas = new Map();
   const html = '<div class="stack"><div class="phero"><div class="pic">' + (p.foto_path ? '<img src="' + esc(fotoUrl(p.foto_path)) + '" alt="" class="zoomavel" data-act="zoom-img" data-src="' + esc(fotoUrl(p.foto_path)) + '" data-tit="' + esc(p.codigo + (p.descricao ? ' · ' + p.descricao : '')) + '" title="Clique para ver maior">' : '<div class="none">' + IC.camera + '<br>Sem foto</div>')
     + (canEdit() ? '<button class="btn small" type="button" data-act="foto-peca" data-id="' + p.id + '">' + IC.camera + (p.foto_path ? ' Trocar foto' : ' Adicionar foto') + '</button>' : '') + '</div>'
     + '<div class="stack" style="gap:10px"><div class="code-xl">' + esc(p.codigo) + '</div><div class="row">' + (p.tipo === 'subkit' ? '<span class="pill t-violet">sub-kit</span>' : '<span class="pill">peça</span>') + '<span class="pill ' + (p.predio ? 't-info' : 't-crit') + '">' + esc(p.predio || 'sem prédio') + '</span>' + (p.ativo === false ? '<span class="pill t-crit">inativa</span>' : '') + '</div>'
     + '<div style="font-size:15px">' + esc(p.descricao || 'Sem descrição') + '</div>' + (kvs.length ? '<dl class="kv">' + kvs.map(([a, b]) => '<div><dt>' + a + '</dt><dd>' + esc(b) + '</dd></div>').join('') + '</dl>' : '')
     + (canEdit() ? '<div class="row"><button class="btn primary" type="button" data-act="edit-peca" data-id="' + p.id + '">' + IC.edit + ' Editar</button>' + (!onde.length && !comps.length ? '<button class="btn ghost danger" type="button" data-act="del-peca" data-id="' + p.id + '">' + IC.trash + ' Apagar</button>' : '') + '</div>' : '') + '</div></div>'
-    + (pgs.length ? '<div class="comp"><div class="comp-h"><h3>No catálogo Rev. 10</h3><span class="meta">' + pgs.length + (pgs.length > 1 ? ' páginas' : ' página') + ' · toque para ver a página inteira e abrir as outras peças</span></div><div class="pg-strip">'
-      + pgs.slice(0, 12).map(r => '<button type="button" class="pg-card" data-act="ref-page-peca" data-page="' + r.p + '" data-cod="' + esc(p.codigo) + '"><span class="page-thumb" data-bg="' + esc(pageStyle(r.p)) + '"></span><span class="pg-l"><b>' + esc(r.k) + '</b><small>p. ' + (r.pp || r.p) + '</small></span></button>').join('')
-      + (pgs.length > 12 ? '<span class="pg-mais">+' + (pgs.length - 12) + '<br><small>use ‹ › na página</small></span>' : '') + '</div></div>' : '')
+    + (fks.length ? '<div class="comp"><div class="comp-h"><h3>Nas fichas</h3><span class="meta">' + fks.length + (fks.length > 1 ? ' fichas' : ' ficha') + '</span></div><div class="pg-strip">'
+      + fks.slice(0, 12).map((f, n) => { const k = S.kitById.get(f.id) || {}; return '<button type="button" class="pg-card fk-card" data-act="ficha-peca" data-n="' + n + '" data-kit="' + f.id + '" title="Abrir a ficha ' + esc(f.cod) + '"><span class="ficha-wrap fk-thumb"></span><span class="pg-l"><b>' + esc(f.cod) + '</b><small>' + (k.pagina ? 'p. ' + esc(k.pagina) : esc((STATUS[k.status] || {}).l || '')) + '</small></span></button>'; }).join('')
+      + (fks.length > 12 ? '<span class="pg-mais">+' + (fks.length - 12) + '<br><small>use ‹ › na ficha</small></span>' : '') + '</div></div>' : '')
     + (p.tipo === 'subkit' ? '<div class="comp"><div class="comp-h"><h3>Peças de dentro do sub-kit</h3><span class="meta">' + comps.length + ' tipos · ' + fmt(comps.reduce((a, c) => a + Number(c.qtde), 0)) + ' peças</span></div>'
       + (comps.length ? comps.map(c => '<div class="crow" data-act="open-peca" data-id="' + c.componente_id + '"><span class="callout">' + (c.peca && c.peca.foto_path ? '' : '·') + '</span><span class="c">' + esc(c.peca ? c.peca.codigo : '?') + '</span><span class="q">' + fmt(c.qtde) + '<small>un.</small></span><span class="a">' + esc((c.peca && c.peca.descricao) || '') + (c.peca && c.peca.predio ? ' · ' + esc(c.peca.predio) : '') + '</span></div>').join('')
         : '<div class="empty">Sem peças cadastradas: a calculadora usa este sub-kit fechado.' + (rs && canEdit() ? '<br><br><button class="btn small primary" type="button" data-act="edit-peca" data-id="' + p.id + '" data-fill="1">' + IC.wand + ' Preencher com a leitura do catálogo</button>' : '') + '</div>') + '</div>' : '')
     + '<div class="comp"><div class="comp-h"><h3>Onde é usada</h3><span class="meta">' + new Set(onde.map(o => o.kit_id)).size + ' kits</span></div>'
     + (onde.length ? onde.map(o => '<div class="crow" data-act="open-kit" data-id="' + o.kit_id + '"><span class="callout">' + esc(o.item) + '</span><span class="c">' + esc(o.cod_cliente) + '</span><span class="q">' + fmt(o.qtde) + '<small>por jogo</small></span><span class="a">' + esc(o.cliente || '') + (o.via ? ' · dentro de ' + esc(o.via) : '') + '</span></div>').join('') : '<div class="empty">Ainda não está em nenhum kit.</div>') + '</div>'
     + '<div class="sec"><div class="sec-h"><h3>Histórico</h3><button class="btn small" type="button" data-act="load-hist" data-peca="' + p.id + '">' + IC.hist + ' Ver</button></div><div id="histBox"></div></div></div>';
-  return { title:crumb(p.codigo, p.tipo === 'subkit' ? 'Sub-kit' : 'Peça'), titleText:p.codigo, html };
+  return { title:crumb(p.codigo, p.tipo === 'subkit' ? 'Sub-kit' : 'Peça'), titleText:p.codigo, html, after:body => miniFichas(body, t) };
 };
 SHEETS.pecaedit = async t => {
   if (!S.editor || S.editor._for !== t){
@@ -2645,8 +2727,13 @@ const ACT = {
     if (!p) return toast('A peça ' + el.dataset.cod + ' ainda não está cadastrada.');
     closeViewer(); const t = S.stack[S.stack.length - 1]; if (t && t.type === 'peca' && t.id === p.id) return;
     pushSheet({ type:'peca', id:p.id }); },
-  'fzv-open': () => { const t = S.stack[S.stack.length - 1]; if (t && t.type === 'kit' && t.data) abrirFichaZoom(t.data); },
+  'fzv-open': () => { const t = S.stack[S.stack.length - 1]; if (t && t.type === 'kit' && t.data){ FZV.nav = null; abrirFichaZoom(t.data); } },
   'fzv-close': () => fecharFichaZoom(),
+  'ficha-peca': el => { const t = S.stack[S.stack.length - 1]; if (!t || t.type !== 'peca' || !t.fks || !t.fks.length) return;
+    FZV.nav = { lista:t.fks.map(f => f.id), itens:new Map(t.fks.map(f => [f.id, f.itens])), cods:new Map(t.fks.map(f => [f.id, f.cod])), pid:t.id, cache:t.fichas || (t.fichas = new Map()), i:0 };
+    abrirFichaPeca(Number(el.dataset.n) || 0); },
+  'fzv-nav': el => fzvAndar(Number(el.dataset.d) || 0),
+  'fzv-item': el => { const id = Number(el.dataset.id); if (!id) return; fecharFichaZoom(); const t = S.stack[S.stack.length - 1]; if (t && t.type === 'peca' && t.id === id) return; pushSheet({ type:'peca', id }); },
   'fzv-zoom': el => { const z = el.dataset.z; if (z === '+' || z === '-') fzvPasso(z === '+' ? 1 : -1); else fzvZoom(z === 'pagina' || z === 'largura' ? fzvFit(z) : Number(z)); },
   'viewer-zoom': el => { const z = Number(el.dataset.z); V.zoom = z === 0 ? 1 : Math.min(4, Math.max(1, +(V.zoom + z * 0.5).toFixed(2))); applyZoom(); },
   'viewer-step': el => { const i = V.pages.indexOf(V.page) + Number(el.dataset.d); if (i >= 0 && i < V.pages.length){ V.page = V.pages[i]; $('#vStage').scrollTo(0, 0); drawViewer(); } },
@@ -2814,6 +2901,7 @@ document.addEventListener('keydown', e => {
   if (fzvAberta()){   // ficha ampliada: Esc fecha, + e - mudam o zoom, 0 = página inteira, 1 = tamanho real
     if (e.key === 'Escape') return fecharFichaZoom();
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (FZV.nav && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')){ e.preventDefault(); return fzvAndar(e.key === 'ArrowLeft' ? -1 : 1); }
     const z = { '+':'+', '=':'+', '-':'-', '0':'pagina', '1':'1' }[e.key]; if (!z) return; e.preventDefault();
     if (z === '+' || z === '-') fzvPasso(z === '+' ? 1 : -1); else fzvZoom(z === 'pagina' ? fzvFit('pagina') : 1); return;
   }
