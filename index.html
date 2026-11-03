@@ -1824,10 +1824,11 @@ function drawViewer(){
 }
 /* páginas do catálogo onde a peça aparece (para a tela da peça) */
 function paginasDaPeca(cod){ const k = chave(cod); return k ? REF.kits.filter(r => r.p && REF.pm.map[String(r.p)] && r.i.some(t => t[1] && chave(t[1]) === k)).sort((a, b) => a.p - b.p) : []; }
-/* tela da peça: as fichas do banco que usam a peça (no lugar das páginas do catálogo Sabó) */
+/* tela da peça: as fichas do banco que têm a peça como item (no lugar das páginas do catálogo Sabó).
+   Só o uso direto: dentro de um sub-kit a ficha mostra o sub-kit (ex.: 11.121 - SI dentro do 11.120 - SI); isso fica em "Onde é usada" */
 function fichasDaPeca(onde){
   const m = new Map();
-  (onde || []).forEach(o => { if (!o.kit_id) return; let f = m.get(o.kit_id);
+  (onde || []).forEach(o => { if (!o.kit_id || o.via) return; let f = m.get(o.kit_id);
     if (!f){ f = { id:o.kit_id, cod:String(o.cod_cliente || ''), itens:new Set() }; m.set(o.kit_id, f); }
     if (o.item != null && o.item !== '') f.itens.add(String(o.item)); });
   const pag = f => { const k = S.kitById.get(f.id), n = parseInt(k && k.pagina, 10); return isNaN(n) ? 1e9 : n; };
