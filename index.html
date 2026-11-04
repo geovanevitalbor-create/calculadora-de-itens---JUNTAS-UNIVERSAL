@@ -1217,6 +1217,7 @@ function SupaStore(){
     if (/duplicate key.*kits_codigo_unico/i.test(m)) return 'Já existe um kit com esse código para esse cliente.';
     if (/duplicate key.*pecas_chave_unica/i.test(m)) return 'Já existe uma peça com esse código.';
     if (/violates foreign key.*kit_itens|still referenced/i.test(m)) return 'Esse registro está em uso e não pode ser apagado.';
+    if (/_qtde_check/i.test(m)) return 'A quantidade tem que ser maior que zero.';
     if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'Sem conexão com o banco. Confira a internet e tente de novo.';
     if (/Invalid login credentials/i.test(m)) return 'E-mail ou senha incorretos.';
     if (/Email not confirmed/i.test(m)) return 'Esse e-mail ainda não foi confirmado.';
@@ -2245,7 +2246,8 @@ async function edSave(){
   if (!K.cliente_id) err = 'Escolha o cliente.'; else if (!String(K.cod_cliente || '').trim()) err = 'Informe o código do kit.';
   const seen = new Set();
   ed.itens.forEach(it => { it.err = ''; if (!String(it.item).trim()) it.err = 'Falta o número do item.'; else if (seen.has(it.item)) it.err = 'Número repetido.'; seen.add(it.item);
-    if (!it.err && (!String(it.codigo).trim() || it.qtde === '' || it.qtde == null) && !String(it.pendencia || '').trim()) it.err = 'Falta ' + (!String(it.codigo).trim() ? 'o código' : 'a qtde') + ' (ou escreva a pendência).'; });
+    if (!it.err && (!String(it.codigo).trim() || it.qtde === '' || it.qtde == null) && !String(it.pendencia || '').trim()) it.err = 'Falta ' + (!String(it.codigo).trim() ? 'o código' : 'a qtde') + ' (ou escreva a pendência).';
+    if (!it.err && it.qtde !== '' && it.qtde != null && !qtdeOk(it.qtde)) it.err = 'Qtde tem que ser maior que zero.'; });
   if (!err && ed.itens.some(it => it.err)) err = 'Confira os itens marcados em vermelho.';
   if (err){ ed.err = err; $('#edErr').outerHTML = '<div class="errbox" id="edErr">' + esc(err) + '</div>'; drawEdItens(); $('#sheetBody').scrollTop = 0; return; }
   btn.disabled = true; btn.textContent = 'Salvando…';
@@ -2589,6 +2591,7 @@ function toast(msg, action, ms){
   setTimeout(() => el.remove(), ms || 4200);
 }
 const errMsg = e => (e && (e.friendly || e.message)) ? e.message : 'Algo deu errado: ' + String(e);
+function qtdeOk(q){ return Math.round(Number(q) * 100) > 0; }   // o banco grava qtde com 2 casas e só aceita > 0
 const armed = new Map();
 function arm(key, msg){ const t = armed.get(key) || 0; if (Date.now() < t){ armed.delete(key); return true; } armed.set(key, Date.now() + 4000); toast(msg, null, 4000); return false; }
 function setDb(text, on){ const l = $('#dbLine'); if (!l) return; l.classList.toggle('on', !!on); l.querySelector('span').textContent = text; }
@@ -2853,8 +2856,8 @@ const ACT = {
   'calc-clear': () => { if (!S.calc.linhas.length) return; if (!arm('clear', 'Toque de novo em Limpar para tirar todos os kits.')) return; S.calc.linhas = []; S.calc.prodId = null; S.calc.prodNome = ''; calcSave(); renderView(); runCalc(); },
   'calc-import': () => { const f = $('#orderFile'); f.value = ''; f.click(); },
   'calc-template': () => downloadTemplate(), 'calc-export': () => exportCalc(), 'calc-print': () => printCalc(),
-  'calc-save': () => { if (!S.calc.linhas.length) return toast('Adicione kits antes de salvar.'); if (S.mode === 'supabase' && !(S.me && S.me.id) && !openMode()) return toast('Entre com seu login para salvar produções.'); pushSheet({ type:'savecalc' }); },
-  'prod-save': el => withBusy(el, async () => { const nome = ($('#prodNome').value || '').trim() || 'Produção'; const over = $('#prodOver') && $('#prodOver').checked; const id = await DB.saveProducao(nome, S.calc.linhas, over ? S.calc.prodId : null); S.calc.prodId = id; S.calc.prodNome = nome; calcSave(); S.stack = []; renderSheet(); renderView(); toast('Produção salva.'); }),
+  'calc-save': () => { if (!S.calc.linhas.length) return toast('Adicione kits antes de salvar.'); if (!S.calc.linhas.some(l => qtdeOk(l.qtde))) return toast('Ponha a quantidade de jogos antes de salvar.'); if (S.mode === 'supabase' && !(S.me && S.me.id) && !openMode()) return toast('Entre com seu login para salvar produções.'); pushSheet({ type:'savecalc' }); },
+  'prod-save': el => withBusy(el, async () => { const nome = ($('#prodNome').value || '').trim() || 'Produção'; const over = $('#prodOver') && $('#prodOver').checked; const id = await DB.saveProducao(nome, S.calc.linhas.filter(l => qtdeOk(l.qtde)), over ? S.calc.prodId : null); S.calc.prodId = id; S.calc.prodNome = nome; calcSave(); S.stack = []; renderSheet(); renderView(); toast('Produção salva.'); }),
   'open-prods': () => pushSheet({ type:'prods' }),
   'prod-open': el => { const p = (S._prods || []).find(x => x.id === Number(el.dataset.id)); if (!p) return; S.calc.linhas = p.linhas.filter(l => S.kitById.has(l.kit_id)).map(l => ({ kit_id:l.kit_id, qtde:Number(l.qtde) })); S.calc.prodId = p.id; S.calc.prodNome = p.nome; calcSave(); S.stack = []; renderSheet(); go('calculadora'); runCalc(); },
   'prod-del': el => { if (!arm('pd' + el.dataset.id, 'Toque de novo para apagar a produção.')) return; withBusy(el, async () => { await DB.deleteProducao(Number(el.dataset.id)); if (S.calc.prodId === Number(el.dataset.id)){ S.calc.prodId = null; calcSave(); } renderSheet(); }); },
@@ -2886,6 +2889,7 @@ function peInput(el){
   if (el.dataset.pe === 'p'){ ed.p[el.dataset.f] = el.value; if (el.dataset.f === 'tipo'){ const s = $('#peComps'); if (s) s.hidden = el.value !== 'subkit'; } }
   else { const c = ed.comps[Number(el.dataset.i)]; if (c){ c[el.dataset.f] = el.dataset.f === 'qtde' ? el.value : el.value; const hint = el.parentElement.querySelector('.chint'); if (hint && el.dataset.f === 'codigo') hint.innerHTML = el.value ? (S.pecaByChave.get(chave(el.value)) ? '<span class="ok">✓</span>' + esc(S.pecaByChave.get(chave(el.value)).descricao || '') : '<span class="new">Peça nova</span> será cadastrada') : ''; } }
 }
+document.addEventListener('wheel', e => { const t = e.target; if (t && t.type === 'number' && t === document.activeElement) t.blur(); }, { passive:true });
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'kitsQ') return onKitsQ();
