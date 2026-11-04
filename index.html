@@ -1417,7 +1417,7 @@ function renderKits(v){
   v.innerHTML = demoStrip()
     + '<div class="list-head"><div class="toolbar"><label class="search"><span class="sr">Buscar kit</span>' + IC.search + '<input class="field" id="kitsQ" type="search" placeholder="Código, descrição, cód. universal…" value="' + esc(F.q) + '" autocomplete="off"></label>'
     + (canEdit() ? '<button class="btn primary" type="button" data-act="new-kit">' + IC.plus + ' Novo kit</button>' : '')
-    + '<button class="btn" type="button" data-act="print-catalog" title="Baixar o catálogo em PDF">' + IC.down + ' Baixar catálogo</button></div>'
+    + '<button class="btn" type="button" data-act="print-catalog" title="Baixar o catálogo em PDF ou Excel">' + IC.down + ' Baixar catálogo</button></div>'
     + '<div class="chips">' + chip('cli', 'all', 'Todos os clientes', S.kits.length) + S.clientes.map(c => chip('cli', String(c.id), c.nome, byCli.get(String(c.id)) || 0)).join('') + '</div>'
     + '<div class="chips">' + chip('st', 'all', 'Todos', null) + Object.keys(STATUS).map(s => chip('st', s, STATUS[s].l, bySt.get(s) || 0)).join('')
     + (nConf ? chip('st', 'conferir', 'Com dúvida do catálogo', nConf) : '') + '</div></div>'
@@ -1764,21 +1764,27 @@ async function printHtml(html, nFichas){
   if (faltou) toast(faltou < 0 ? 'Algumas fotos demoraram demais e podem ter saído em branco.' : faltou + (faltou > 1 ? ' fotos não carregaram e saíram' : ' foto não carregou e saiu') + ' em branco.', null, 7000);
   setTimeout(() => { pa.innerHTML = ''; }, 1500);
 }
-async function printKits(ids){
+async function buscarFichas(ids){   // fichas completas (itens e fotos), na ordem do catálogo; serve ao PDF e ao Excel
+  const n = ids.length;
+  progresso('Buscando ' + n + (n > 1 ? ' fichas' : ' ficha') + '…', n > 60 ? 0 : null);
+  let datas = [];
+  if (DB.kitsFull){   // de 60 em 60, três pedidos ao mesmo tempo (antes: um de cada vez)
+    const partes = []; for (let i = 0; i < ids.length; i += 60) partes.push(ids.slice(i, i + 60));
+    for (let i = 0; i < partes.length; i += 3){
+      (await Promise.all(partes.slice(i, i + 3).map(p => DB.kitsFull(p)))).forEach(r => { datas = datas.concat(r); });
+      if (n > 60) progresso('Buscando fichas… ' + datas.length + ' de ' + n, datas.length / n);
+    }
+  } else datas = await Promise.all(ids.map(id => DB.kit(id)));
+  datas.sort((a, b) => (a.kit.pagina || 99999) - (b.kit.pagina || 99999) || a.kit.cod_cliente.localeCompare(b.kit.cod_cliente, 'pt-BR', { numeric:true }));
+  return datas;
+}
+async function printKits(ids, opt){
   if (!ids.length){ toast('Nenhuma ficha para imprimir.'); return; }
   if (IN_ARTIFACT){ toast(SEM_PDF_AQUI, null, 6000); return; }
   const n = ids.length;
-  progresso('Buscando ' + n + (n > 1 ? ' fichas' : ' ficha') + '…', n > 60 ? 0 : null);
   try {
-    let datas = [];
-    if (DB.kitsFull){   // de 60 em 60, três pedidos ao mesmo tempo (antes: um de cada vez)
-      const partes = []; for (let i = 0; i < ids.length; i += 60) partes.push(ids.slice(i, i + 60));
-      for (let i = 0; i < partes.length; i += 3){
-        (await Promise.all(partes.slice(i, i + 3).map(p => DB.kitsFull(p)))).forEach(r => { datas = datas.concat(r); });
-        if (n > 60) progresso('Buscando fichas… ' + datas.length + ' de ' + n, datas.length / n);
-      }
-    } else datas = await Promise.all(ids.map(id => DB.kit(id)));
-    datas.sort((a, b) => (a.kit.pagina || 99999) - (b.kit.pagina || 99999) || a.kit.cod_cliente.localeCompare(b.kit.cod_cliente, 'pt-BR', { numeric:true }));
+    const datas = await buscarFichas(ids);
+    if (opt && opt.semForn) datas.forEach(d => d.itens.forEach(i => { i.fornecedor = ''; }));   // catálogo para mandar a terceiros: coluna Fornecedor vazia
     progresso('Montando ' + n + (n > 1 ? ' fichas' : ' ficha') + '…', null); await umQuadro();
     await printHtml(datas.map(d => fichaHtml(d)).join(''), n);
   } catch(e){ progresso(null); toast(errMsg(e)); }
@@ -2568,9 +2574,10 @@ SHEETS.baixar = async t => {
     + (clis.length > 1 ? '<div class="chips">' + [['all', 'Todos os clientes']].concat(clis.map(c => [String(c.id), c.nome])).map(([v, l]) => '<button class="chip" type="button" data-act="baixar-cli" data-val="' + v + '" aria-pressed="' + (t.cli === v) + '">' + esc(l) + '</button>').join('') + '</div>' : '')
     + '<div class="listbox">' + BAIXAR_CATS.map(([id, nome, fn]) => { const n = base.filter(fn).length;
         return '<label class="chkrow' + (n ? '' : ' off') + '"><input type="checkbox" data-baixar="' + id + '"' + (t.sel.has(id) && n ? ' checked' : '') + (n ? '' : ' disabled') + '><span class="c">' + nome + '</span><span class="pill">' + n + '</span></label>'; }).join('') + '</div>'
+    + '<div class="listbox"><label class="chkrow"><input type="checkbox" data-baixar-forn' + (t.semForn ? ' checked' : '') + '><span class="c">Fornecedor em branco</span></label></div>'
     + '<p class="muted" style="margin:0;font-size:13px">Marque um ou mais. Kit que está em mais de um grupo sai uma vez só. As fichas saem na ordem do catálogo; rascunho e em revisão saem com a marca d\'água. Na janela que abrir, escolha <b>Salvar como PDF</b>.</p>'
-    + '<div class="sticky-actions"><button class="btn ghost" type="button" data-act="back">Cancelar</button><button class="btn primary" type="button" data-act="baixar-go" id="baixarGo">' + IC.down + ' ' + rotuloBaixar(t) + '</button></div></div>';
-  return { title:crumb('Baixar catálogo', 'escolha o que entra no PDF'), titleText:'Baixar catálogo', html };
+    + '<div class="sticky-actions"><button class="btn" type="button" data-act="baixar-xls" id="baixarXls">' + IC.down + ' Excel</button><button class="btn primary" type="button" data-act="baixar-go" id="baixarGo">' + IC.down + ' ' + rotuloBaixar(t) + '</button></div></div>';
+  return { title:crumb('Baixar catálogo', 'escolha o que entra no PDF e no Excel'), titleText:'Baixar catálogo', html };
 };
 
 /* ================= mensagens ================= */
@@ -2595,6 +2602,46 @@ async function saveFile(name, wb){
     return;
   }
   try { XLSX.writeFile(wb, name, { compression:true }); } catch(e){ toast('Não consegui gerar o arquivo.'); }
+}
+/* Excel dos kits (mesma escolha do "Baixar catálogo"): aba Kits com uma linha por item, no formato da Base de Composição da primeira versão,
+   e aba Sub-kits com o que vai dentro de cada sub-kit que aparece nesses kits */
+async function exportKits(ids, opt){
+  opt = opt || {};
+  if (!ids.length){ toast('Marque pelo menos um grupo com kits.'); return; }
+  if (typeof XLSX === 'undefined'){ toast('O gerador de Excel não carregou.'); return; }
+  try {
+    const datas = await buscarFichas(ids);
+    progresso('Montando o Excel…', null); await umQuadro();
+    const nomeCli = id => (S.clientes.find(c => c.id === id) || {}).nome || '';
+    const a = [['Cliente', 'Cód. Cliente', 'Cód. Universal (Kit)', 'Descrição do Kit', 'Item Nº', 'Cód. Item Universal', 'Família', 'Fornecedor', 'Qtde', 'Aplicação do Item', 'Esp.', 'Cód. Item no Cliente', 'Prédio', 'Embalagem', 'Observação', 'Situação', 'Pendência']];
+    const subs = new Map();
+    datas.forEach(d => { const k = d.kit;
+      const ini = [nomeCli(k.cliente_id), k.cod_cliente || '', k.cod_universal || '', k.descricao || ''], fim = [k.embalagem || '', k.observacao || '', (STATUS[k.status] || STATUS.rascunho).l];
+      if (!d.itens.length) a.push(ini.concat(['', '', '', '', '', '', '', '', ''], fim, ['Kit sem itens']));
+      d.itens.forEach(i => { const p = i.peca;
+        if (p && p.tipo === 'subkit') subs.set(p.id, p);
+        a.push(ini.concat([i.item || '', p ? p.codigo : '', (p && p.familia) || '', opt.semForn ? '' : (i.fornecedor || ''), i.qtde == null ? '' : Number(i.qtde),
+          i.aplicacao || '', i.espessura || '', i.cod_item_cliente || '', (p && p.predio) || ''], fim, [i.pendencia || ''])); });
+    });
+    // sub-kits: o que vai dentro de cada um (e dos sub-kits que estão dentro deles)
+    const grupos = [], vistos = new Set(), fila = [...subs.values()];
+    while (fila.length){
+      const lote = []; for (const p of fila.splice(0, 6)) if (!vistos.has(p.id)){ vistos.add(p.id); lote.push(p); }
+      (await Promise.all(lote.map(p => DB.peca(p.id)))).forEach((r, j) => { const sp = lote[j], comps = r.comps || [];
+        grupos.push({ cod:sp.codigo, linhas:comps.length ? comps.map(c => [sp.codigo, sp.descricao || '', c.peca ? c.peca.codigo : '', (c.peca && c.peca.descricao) || '', Number(c.qtde)])
+          : [[sp.codigo, sp.descricao || '', '', 'Sem peças cadastradas', '']] });
+        comps.forEach(c => { if (c.peca && c.peca.tipo === 'subkit' && !vistos.has(c.peca.id)) fila.push(c.peca); }); });
+    }
+    grupos.sort((x, y) => String(x.cod).localeCompare(String(y.cod), 'pt-BR', { numeric:true }));
+    const b = [['Sub-kit', 'Descrição do sub-kit', 'Peça', 'Descrição da peça', 'Qtde']]; grupos.forEach(g => g.linhas.forEach(l => b.push(l)));
+    const aba = (aoa, larg) => { const s = XLSX.utils.aoa_to_sheet(aoa); s['!cols'] = larg.map(w => ({ wch:w }));
+      s['!autofilter'] = { ref:XLSX.utils.encode_range({ s:{ r:0, c:0 }, e:{ r:aoa.length - 1, c:aoa[0].length - 1 } }) }; return s; };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, aba(a, [10, 13, 18, 46, 7, 18, 14, 13, 7, 30, 8, 14, 10, 32, 32, 11, 30]), 'Kits');
+    if (b.length > 1) XLSX.utils.book_append_sheet(wb, aba(b, [18, 40, 18, 40, 7]), 'Sub-kits');
+    progresso(null);
+    await saveFile('kits-' + new Date().toISOString().slice(0, 10) + (opt.semForn ? '-sem-fornecedor' : '') + '.xlsx', wb);
+  } catch(e){ progresso(null); toast(errMsg(e)); }
 }
 function exportCalc(){
   const R = S.calc.result || []; if (!R.length){ toast('Nada para exportar.'); return; }
@@ -2783,7 +2830,10 @@ const ACT = {
   'baixar-cli': el => { const t = S.stack[S.stack.length - 1]; if (t && t.type === 'baixar'){ t.cli = el.dataset.val; renderSheet(true); } },
   'baixar-go': el => { const t = S.stack[S.stack.length - 1]; if (!t || t.type !== 'baixar') return;
     const ids = baixarLista(t).map(k => k.id); if (!ids.length) return toast('Marque pelo menos um grupo com kits.');
-    printKits(ids); },
+    printKits(ids, { semForn:!!t.semForn }); },
+  'baixar-xls': el => { const t = S.stack[S.stack.length - 1]; if (!t || t.type !== 'baixar') return;
+    const ids = baixarLista(t).map(k => k.id); if (!ids.length) return toast('Marque pelo menos um grupo com kits.');
+    withBusy(el, () => exportKits(ids, { semForn:!!t.semForn })); },
   'kit-fotos-ref': el => pushSheet({ type:'kitedit', id:Number(el.dataset.id), autoFotos:true }),
   'cfg-imgs': el => withBusy(el, async () => { const txt = el.innerHTML; try { await subirImagensCatalogo(el); } finally { el.innerHTML = txt; statusImagens(); } }),
   'ed-fill-ref': el => { const ed = S.editor; const r = refKit(ed.kit.cod_cliente); if (!r) return; if (ed.itens.some(i => i.codigo || i.aplicacao) && !arm('fill', 'Isso troca os itens atuais pelos do catálogo. Toque de novo para confirmar.')) return; fillFromRef(ed, r); renderSheet(true); toast('Preenchido com o catálogo Rev. 10. Confira e salve.'); },
@@ -2849,6 +2899,7 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'orderFile' && t.files && t.files[0]) return readOrder(t.files[0]);
+  if (t.dataset.baixarForn != null){ const top = S.stack[S.stack.length - 1]; if (top && top.type === 'baixar') top.semForn = t.checked; return; }
   if (t.dataset.baixar){ const top = S.stack[S.stack.length - 1]; if (top && top.type === 'baixar'){ if (t.checked) top.sel.add(t.dataset.baixar); else top.sel.delete(t.dataset.baixar); const b = $('#baixarGo'); if (b) b.innerHTML = IC.down + ' ' + rotuloBaixar(top); } return; }
   if (t.id === 'demoRole') return withBusy(null, async () => { await DB.setDemoRole(t.value); const b = await DB.init(); S.me = b.me; S.stack = []; renderSheet(); renderNav(); renderView(); toast('Agora você está como ' + t.value + '.'); });
   if (t.dataset.papel) return withBusy(t, async () => { await DB.definirPapel(t.dataset.papel, t.value); toast('Papel atualizado.'); if (S.me && t.dataset.papel === S.me.id){ S.me.papel = t.value; renderNav(); } });
